@@ -8,7 +8,7 @@ on:
 
 # 必须的权限配置
 permissions:
-  contents: write         # 读写仓库内容（Claude 需要 write 权限）
+  contents: write         # 读写仓库内容
   issues: write           # 写入 Issue 评论
   pull-requests: write    # 写入 PR 评论
   id-token: write         # OIDC 认证所需
@@ -29,9 +29,11 @@ jobs:
         with:
           anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
           github_token: ${{ secrets.GITHUB_TOKEN }}
-          # 禁用 git commit 和 push，避免分支不存在导致 404
-          claude_args: |
-            --disallowedTools "Bash(git commit:*),Bash(git push:*),Bash(git checkout -b:*)"
+          # 使用 prompt 指导 Claude 的行为，而不是 disallowedTools
+          # 避免 allowedTools 和 disallowedTools 冲突导致进程崩溃
+          prompt: |
+            请用中文回复。
+            如果用户没有明确要求修改代码，只需要在评论中回答问题即可，不需要创建分支或提交代码。
 
   notify:
     needs: claude
