@@ -5,38 +5,56 @@ on:
     types: [created]
   pull_request_review_comment:
     types: [created]
+  # 新增：支持 Issue 分配触发
+  issues:
+    types: [assigned]
 
-# 必须的权限配置
+# 权限配置
 permissions:
-  contents: write         # 读写仓库内容
-  issues: write           # 写入 Issue 评论
-  pull-requests: write    # 写入 PR 评论
-  id-token: write         # OIDC 认证所需
+  contents: write
+  issues: write
+  pull-requests: write
+  id-token: write
+  actions: read  # 新增：允许读取 CI 状态
+
+# 并发控制：同一 Issue 只能有一个运行，避免冲突
+concurrency:
+  group: claude-${{ github.event.issue.number || github.event.pull_request.number }}
+  cancel-in-progress: false  # 不取消正在运行的任务
 
 jobs:
   claude:
     runs-on: ubuntu-latest
-    # 只有评论包含 @claude 才触发（支持 Issue 和 PR）
+    # 触发条件优化
     if: |
       (github.event_name == 'issue_comment' && contains(github.event.comment.body, '@claude')) ||
-      (github.event_name == 'pull_request_review_comment' && contains(github.event.comment.body, '@claude'))
+      (github.event_name == 'pull_request_review_comment' && contains(github.event.comment.body, '@claude')) ||
+      (github.event_name == 'issues' && github.event.action == 'assigned' && github.event.assignee.login == 'claude[bot]')
+
+    # 超时设置：防止任务卡住
+    timeout-minutes: 30
+
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # 获取完整历史，支持 git 操作
 
       - name: Run Claude Code
         uses: anthropics/claude-code-action@v1
         with:
-          # 使用 Claude Max 订阅的 OAuth Token
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
-          # 启用详细输出便于调试
-          show_full_output: true
-          # 不使用 prompt 参数，让 action 自动传递 issue 评论内容
+          # 调试时启用，生产环境可关闭
+          show_full_output: false
+          # 使用短横线格式的分支名（避免某些 git 客户端问题）
+          branch_prefix: "claude-"
+          # 限制最大对话轮数，控制成本
+          claude_args: |
+            --max-turns 20
 
   notify:
     needs: claude
     runs-on: ubuntu-latest
-    # 无论成功失败都执行通知
     if: always()
     steps:
       - name: Notify Slack
@@ -51,43 +69,37 @@ jobs:
                   "type": "section",
                   "text": {
                     "type": "mrkdwn",
-                    "text": ":robot_face: *Claude Code 工作流通知*"
+                    "text": "${{ needs.claude.result == 'success' && ':white_check_mark:' || needs.claude.result == 'failure' && ':x:' || ':warning:' }} *Claude Code* - ${{ needs.claude.result }}"
                   }
-                },
-                {
-                  "type": "section",
-                  "fields": [
-                    {
-                      "type": "mrkdwn",
-                      "text": "*状态:*\n${{ needs.claude.result == 'success' && ':white_check_mark: 成功' || needs.claude.result == 'failure' && ':x: 失败' || needs.claude.result == 'skipped' && ':fast_forward: 跳过' || ':warning: 取消' }}"
-                    },
-                    {
-                      "type": "mrkdwn",
-                      "text": "*仓库:*\n${{ github.repository }}"
-                    }
-                  ]
-                },
-                {
-                  "type": "section",
-                  "fields": [
-                    {
-                      "type": "mrkdwn",
-                      "text": "*Actions 运行:*\n<${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}|查看详情>"
-                    },
-                    {
-                      "type": "mrkdwn",
-                      "text": "*触发来源:*\n<${{ github.event.issue.html_url || github.event.comment.html_url }}|Issue/PR #${{ github.event.issue.number }}>"
-                    }
-                  ]
                 },
                 {
                   "type": "context",
                   "elements": [
                     {
                       "type": "mrkdwn",
-                      "text": "触发者: ${{ github.event.comment.user.login }} | 时间: ${{ github.event.comment.created_at }}"
+                      "text": "<${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}|查看日志> | <${{ github.event.issue.html_url || github.event.comment.html_url }}|Issue #${{ github.event.issue.number }}> | 触发者: ${{ github.event.comment.user.login || github.event.sender.login }}"
                     }
                   ]
                 }
               ]
             }
+
+  # 新增：自动清理旧分支
+  cleanup:
+    runs-on: ubuntu-latest
+    if: github.event_name == 'issue_comment' && contains(github.event.comment.body, '@claude cleanup')
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Delete merged Claude branches
+        run: |
+          # 删除已合并的 claude- 分支
+          for branch in $(git branch -r --merged origin/main | grep 'origin/claude-' | sed 's/origin\///'); do
+            echo "Deleting merged branch: $branch"
+            git push origin --delete "$branch" || true
+          done
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
