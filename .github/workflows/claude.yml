@@ -6,30 +6,88 @@ on:
   pull_request_review_comment:
     types: [created]
 
+# 必须的权限配置
 permissions:
-  contents: write
-  issues: write
-  pull-requests: write
+  contents: write         # 读写仓库内容（Claude 需要 write 权限）
+  issues: write           # 写入 Issue 评论
+  pull-requests: write    # 写入 PR 评论
+  id-token: write         # OIDC 认证所需
 
 jobs:
   claude:
     runs-on: ubuntu-latest
+    # 只有评论包含 @claude 才触发（支持 Issue 和 PR）
+    if: |
+      (github.event_name == 'issue_comment' && contains(github.event.comment.body, '@claude')) ||
+      (github.event_name == 'pull_request_review_comment' && contains(github.event.comment.body, '@claude'))
     steps:
-      - name: Check out repository
-        uses: actions/checkout@v3
+      - name: Checkout repository
+        uses: actions/checkout@v4
 
-      - name: Generate GitHub App Token
-        id: app-token
-        uses: actions/create-github-app-token@v2
-        with:
-          app_id: ${{ secrets.CLAUDE_APP_ID }}
-          private_key: ${{ secrets.CLAUDE_APP_PRIVATE_KEY }}
-
-      - name: Run Claude Code Action
+      - name: Run Claude Code
         uses: anthropics/claude-code-action@v1
         with:
           anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
-          github_token: ${{ steps.app-token.outputs.token }}
-          # 不指定 prompt 时，默认响应 @claude 指令
-          # 限制可用工具，不允许自动生成分支或提交
-          allowed_tools: "Edit,MultiEdit,Glob,Grep,LS,Read"
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          # 禁用 git commit 和 push，避免分支不存在导致 404
+          claude_args: |
+            --disallowedTools "Bash(git commit:*),Bash(git push:*),Bash(git checkout -b:*)"
+
+  notify:
+    needs: claude
+    runs-on: ubuntu-latest
+    # 无论成功失败都执行通知
+    if: always()
+    steps:
+      - name: Notify Slack
+        uses: slackapi/slack-github-action@v2.0.0
+        with:
+          webhook: ${{ secrets.SLACK_WEBHOOK_URL }}
+          webhook-type: incoming-webhook
+          payload: |
+            {
+              "blocks": [
+                {
+                  "type": "section",
+                  "text": {
+                    "type": "mrkdwn",
+                    "text": ":robot_face: *Claude Code 工作流通知*"
+                  }
+                },
+                {
+                  "type": "section",
+                  "fields": [
+                    {
+                      "type": "mrkdwn",
+                      "text": "*状态:*\n${{ needs.claude.result == 'success' && ':white_check_mark: 成功' || needs.claude.result == 'failure' && ':x: 失败' || needs.claude.result == 'skipped' && ':fast_forward: 跳过' || ':warning: 取消' }}"
+                    },
+                    {
+                      "type": "mrkdwn",
+                      "text": "*仓库:*\n${{ github.repository }}"
+                    }
+                  ]
+                },
+                {
+                  "type": "section",
+                  "fields": [
+                    {
+                      "type": "mrkdwn",
+                      "text": "*Actions 运行:*\n<${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}|查看详情>"
+                    },
+                    {
+                      "type": "mrkdwn",
+                      "text": "*触发来源:*\n<${{ github.event.issue.html_url || github.event.comment.html_url }}|Issue/PR #${{ github.event.issue.number }}>"
+                    }
+                  ]
+                },
+                {
+                  "type": "context",
+                  "elements": [
+                    {
+                      "type": "mrkdwn",
+                      "text": "触发者: ${{ github.event.comment.user.login }} | 时间: ${{ github.event.comment.created_at }}"
+                    }
+                  ]
+                }
+              ]
+            }
