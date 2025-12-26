@@ -1,0 +1,45 @@
+name: Claude Code Integration Workflow  # 工作流名称，可在GitHub Actions界面看到
+
+# 触发条件：监听 Issue 评论和 PR 评论事件
+on:
+  issue_comment:
+    types: [created]       # 新评论创建时触发
+  pull_request_review_comment:
+    types: [created]       # PR评审评论创建时触发
+
+# 权限设置：仅授予必要的读写权限，遵循最小权限原则:contentReference[oaicite:19]{index=19}
+permissions:
+  contents: read           # 允许读取仓库内容（代码）
+  pull-requests: write     # 允许向 Pull Request 写入（发表评论、标记等）
+
+jobs:
+  claude:
+    # 条件判断：仅当评论内容包含 '@claude' 且评论所在的是 PR（而不是纯Issue）时才运行:contentReference[oaicite:20]{index=20}
+    if: >
+      ${{ contains(github.event.comment.body, '@claude') 
+            && (github.event.issue.pull_request != null) }}
+    runs-on: ubuntu-latest   # 使用最新的Ubuntu运行器
+
+    steps:
+      - name: Checkout code  # 第一步：检查出仓库代码
+        uses: actions/checkout@v4
+        # 注：Checkout可选。如果 Claude 需要读取代码文件内容，可以保留这一步。
+        # 若只需Claude根据讨论内容建议而不直接读写文件，也可考虑省略。
+
+      - name: Run Claude Code Action  # 第二步：调用 Claude Code GitHub Action
+        uses: anthropics/claude-code-action@v1
+        with:
+          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          # 无需显式指定 prompt 参数。
+          # 缺省情况下，Action 将自动响应评论中的 @claude 请求，使用评论正文作为对Claude的指令:contentReference[oaicite:21]{index=21}。
+          # （Claude 会读取相关的Issue/PR内容和评论上下文来产生结果。）
+
+      - name: Notify Slack  # 第三步：通过Webhook通知 Slack 频道
+        if: ${{ success() }}   # 仅在上述Claude步骤成功完成时执行通知
+        run: |
+          # 使用 curl POST 一个JSON消息到 Slack Incoming Webhook URL
+          curl -X POST -H 'Content-type: application/json' \
+            --data "{\"text\": \"✅ Claude 已完成处理 @claude 请求 (PR #${{ github.event.issue.number }})。\"}" \
+            ${{ secrets.SLACK_WEBHOOK_URL }}
+        # 注：上述消息包含 PR 编号，方便在Slack中识别是哪次请求完成。
+        # 文本内容和格式可根据需要调整。
