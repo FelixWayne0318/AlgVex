@@ -1,46 +1,26 @@
-name: Claude (GitHub App) + Slack Notify
-
+name: Claude Code
 on:
   issue_comment:
     types: [created]
-
-permissions:
-  contents: write
-  pull-requests: write
-  issues: write
-  id-token: write
+  pull_request_review_comment:
+    types: [created]
 
 jobs:
   claude:
-    if: contains(github.event.comment.body, '@claude')
     runs-on: ubuntu-latest
-
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Run Claude Code Action (GitHub App)
-        uses: anthropics/claude-code-action@v1
+      - uses: actions/checkout@v3
+      - uses: anthropics/claude-code-action@v1
         with:
-          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
-          trigger_phrase: "@claude"
-          label_trigger: "claude"
-          branch_prefix: "claude/"
-          github_token: ${{ github.token }}
+          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}  # 使用自己的 API Key（若使用官方App，可删除此行）:contentReference[oaicite:6]{index=6}:contentReference[oaicite:7]{index=7}
 
-      - name: Notify Slack
-        if: always()
-        env:
-          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
-          REPO: ${{ github.repository }}
-          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
-          ISSUE_URL: ${{ github.event.issue.html_url }}
-          ACTOR: ${{ github.actor }}
-        run: |
-          if [ -z "$SLACK_WEBHOOK_URL" ]; then
-            echo "SLACK_WEBHOOK_URL missing"; exit 0
-          fi
-
-          curl -sS -X POST -H 'Content-type: application/json' \
-          --data "{\"text\": \"Claude job finished ✅\\nRepo: ${REPO}\\nActor: ${ACTOR}\\nRun: ${RUN_URL}\\nIssue/PR: ${ISSUE_URL}\"}" \
-          "$SLACK_WEBHOOK_URL" || true
+  notify:
+    needs: claude
+    runs-on: ubuntu-latest
+    if: always()
+    steps:
+      - name: 通知 Slack
+        uses: slackapi/slack-github-action@v1
+        with:
+          slack_webhook_url: ${{ secrets.SLACK_WEBHOOK_URL }}
+          payload: '{"text": ":robot_face: Claude 工作流 *${{ job.status }}*"}'
