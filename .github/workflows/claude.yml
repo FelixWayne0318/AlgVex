@@ -27,18 +27,11 @@ jobs:
       - name: Run Claude Code
         uses: anthropics/claude-code-action@v1
         with:
-          # 使用 Claude Max 订阅的 OAuth Token（通过 claude setup-token 生成）
+          # 使用 Claude Max 订阅的 OAuth Token
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           # 启用详细输出便于调试
           show_full_output: true
-          prompt: |
-            请用中文回复。
-            你是一个全能的代码助手，可以：
-            - 读取和分析代码文件
-            - 创建、修改、删除文件
-            - 执行 git 操作（提交、推送、创建分支）
-            - 创建 Pull Request
-            当用户请求执行任务时，请积极完成，不要只是回复。
+          # 不使用 prompt 参数，让 action 自动传递 issue 评论内容
 
   notify:
     needs: claude
