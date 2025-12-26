@@ -27,8 +27,8 @@ jobs:
       - name: Run Claude Code
         uses: anthropics/claude-code-action@v1
         with:
-          # 不使用 anthropic_api_key，通过 Claude GitHub App 的 OIDC 认证
-          # GitHub App 会自动处理认证，无需 API 余额
+          # 使用 Claude Max 订阅的 OAuth Token（通过 claude setup-token 生成）
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           prompt: |
             请用中文回复。
             如果用户没有明确要求修改代码，只需要在评论中回答问题即可，不需要创建分支或提交代码。
