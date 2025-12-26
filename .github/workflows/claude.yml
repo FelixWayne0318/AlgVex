@@ -6,12 +6,12 @@ on:
   pull_request_review_comment:
     types: [created]
 
-# 关键修复：添加完整的权限配置
+# 必须的权限配置
 permissions:
-  contents: read          # 读取仓库内容
+  contents: write         # 读写仓库内容（Claude 需要 write 权限）
   issues: write           # 写入 Issue 评论
   pull-requests: write    # 写入 PR 评论
-  id-token: write         # 启用 OIDC token（解决 OIDC 获取失败问题）
+  id-token: write         # OIDC 认证所需
 
 jobs:
   claude:
@@ -23,19 +23,15 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
-        with:
-          fetch-depth: 1
 
       - name: Run Claude Code
         uses: anthropics/claude-code-action@v1
         with:
           anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
-          # 关键修复：显式传入 GITHUB_TOKEN 解决 401 问题
           github_token: ${{ secrets.GITHUB_TOKEN }}
-          # 禁用自动提交/推送功能，避免分支不存在导致 404
-          # Claude 只会在评论中回复，不会创建分支或提交代码
-          allowed_tools: "View,Edit,Bash,Write,Read,Glob,Grep,MultiEdit"
-          direct_prompt: "false"
+          # 禁用 git commit 和 push，避免分支不存在导致 404
+          claude_args: |
+            --disallowedTools "Bash(git commit:*),Bash(git push:*),Bash(git checkout -b:*)"
 
   notify:
     needs: claude
