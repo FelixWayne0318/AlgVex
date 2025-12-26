@@ -27,10 +27,8 @@ jobs:
       - name: Run Claude Code
         uses: anthropics/claude-code-action@v1
         with:
-          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
-          github_token: ${{ secrets.GITHUB_TOKEN }}
-          # 使用 prompt 指导 Claude 的行为，而不是 disallowedTools
-          # 避免 allowedTools 和 disallowedTools 冲突导致进程崩溃
+          # 不使用 anthropic_api_key，通过 Claude GitHub App 的 OIDC 认证
+          # GitHub App 会自动处理认证，无需 API 余额
           prompt: |
             请用中文回复。
             如果用户没有明确要求修改代码，只需要在评论中回答问题即可，不需要创建分支或提交代码。
