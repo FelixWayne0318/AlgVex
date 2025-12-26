@@ -1,0 +1,29 @@
+name: Debug Issue Comment -> Slack
+
+on:
+  issue_comment:
+    types: [created]
+
+permissions:
+  contents: read
+
+jobs:
+  debug:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Dump context
+        run: |
+          echo "actor=${{ github.actor }}"
+          echo "repo=${{ github.repository }}"
+          echo "issue=${{ github.event.issue.number }}"
+          echo "url=${{ github.event.issue.html_url }}"
+          echo "body<<EOF"
+          echo "${{ github.event.comment.body }}"
+          echo "EOF"
+
+      - name: Notify Slack
+        if: always()
+        run: |
+          curl -sS -X POST -H 'Content-type: application/json' \
+          --data "{\"text\":\"[AlgVex] issue_comment trigger OK ✅\\nRepo: ${{ github.repository }}\\nIssue: #${{ github.event.issue.number }}\\nURL: ${{ github.event.issue.html_url }}\"}" \
+          "${{ secrets.SLACK_WEBHOOK_URL }}"
