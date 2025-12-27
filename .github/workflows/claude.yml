@@ -108,6 +108,7 @@ jobs:
       issues: write
       pull-requests: read
       actions: read
+      id-token: write  # OAuth token 需要 OIDC
 
     steps:
       - name: Checkout main branch (read-only)
