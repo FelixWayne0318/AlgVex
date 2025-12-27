@@ -28,14 +28,28 @@ jobs:
     timeout-minutes: 30
 
     steps:
-      - name: Checkout PR head (Issue comment)
+      # 获取 PR 的实际分支名（issue_comment 事件需要）
+      - name: Get PR branch name
+        id: pr-branch
+        if: ${{ github.event_name == 'issue_comment' && github.event.issue.pull_request != null }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          PR_NUMBER=${{ github.event.issue.number }}
+          BRANCH_NAME=$(gh pr view $PR_NUMBER --repo ${{ github.repository }} --json headRefName --jq '.headRefName')
+          echo "branch=$BRANCH_NAME" >> $GITHUB_OUTPUT
+          echo "PR #$PR_NUMBER branch: $BRANCH_NAME"
+
+      # PR 会话评论：checkout 实际分支（可 push）
+      - name: Checkout PR branch (Issue comment)
         if: ${{ github.event_name == 'issue_comment' && github.event.issue.pull_request != null }}
         uses: actions/checkout@v4
         with:
-          ref: refs/pull/${{ github.event.issue.number }}/head
+          ref: ${{ steps.pr-branch.outputs.branch }}
           fetch-depth: 0
 
-      - name: Checkout PR head (Review comment)
+      # PR 代码审查评论：checkout 实际分支
+      - name: Checkout PR branch (Review comment)
         if: ${{ github.event_name == 'pull_request_review_comment' }}
         uses: actions/checkout@v4
         with:
