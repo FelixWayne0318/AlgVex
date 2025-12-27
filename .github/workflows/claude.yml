@@ -7,7 +7,6 @@ on:
     types: [created]
 
 permissions:
-  # 需要写权限才能让 Claude 正常工作
   contents: write
   issues: write
   pull-requests: write
@@ -19,13 +18,13 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  claude:
+  # Job 1: PR 评论触发 - 可以修改代码
+  claude-pr:
     if: ${{ (github.event_name == 'issue_comment' && github.event.issue.pull_request != null && contains(github.event.comment.body, '@claude')) || (github.event_name == 'pull_request_review_comment' && contains(github.event.comment.body, '@claude')) }}
     runs-on: ubuntu-latest
     timeout-minutes: 30
 
     steps:
-      # PR 评论：checkout PR 的 head 分支
       - name: Checkout PR head (Issue comment)
         if: ${{ github.event_name == 'issue_comment' && github.event.issue.pull_request != null }}
         uses: actions/checkout@v4
@@ -33,7 +32,6 @@ jobs:
           ref: refs/pull/${{ github.event.issue.number }}/head
           fetch-depth: 0
 
-      # PR 审查评论：checkout PR 的 head 分支
       - name: Checkout PR head (Review comment)
         if: ${{ github.event_name == 'pull_request_review_comment' }}
         uses: actions/checkout@v4
@@ -64,7 +62,7 @@ jobs:
                   "type": "section",
                   "text": {
                     "type": "mrkdwn",
-                    "text": "${{ job.status == 'success' && ':white_check_mark:' || job.status == 'failure' && ':x:' || ':warning:' }} *Claude Code* - ${{ job.status }}"
+                    "text": "${{ job.status == 'success' && ':white_check_mark:' || job.status == 'failure' && ':x:' || ':warning:' }} *Claude Code (PR)* - ${{ job.status }}"
                   }
                 },
                 {
@@ -72,7 +70,73 @@ jobs:
                   "elements": [
                     {
                       "type": "mrkdwn",
-                      "text": "<${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}|查看日志> | <${{ github.event.issue.html_url || github.event.pull_request.html_url }}|Issue/PR #${{ github.event.issue.number || github.event.pull_request.number }}> | 触发者: ${{ github.event.comment.user.login }}"
+                      "text": "<${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}|查看日志> | <${{ github.event.issue.html_url || github.event.pull_request.html_url }}|PR #${{ github.event.issue.number || github.event.pull_request.number }}> | 触发者: ${{ github.event.comment.user.login }}"
+                    }
+                  ]
+                }
+              ]
+            }
+
+  # Job 2: Issue 评论触发 - 分析模式（可读取 Actions 日志）
+  claude-issue:
+    if: ${{ github.event_name == 'issue_comment' && github.event.issue.pull_request == null && contains(github.event.comment.body, '@claude') }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout default branch
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Run Claude Code (Analysis Mode)
+        id: claude
+        uses: anthropics/claude-code-action@v1
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          use_sticky_comment: true
+          show_full_output: false
+          claude_args: |
+            --max-turns 20
+          prompt: |
+            你正在 Issue 分析模式下运行。你可以：
+
+            1. 使用 gh CLI 读取 Actions 运行结果：
+               - 列出最近的运行: gh run list --limit 10
+               - 查看运行详情: gh run view <run-id>
+               - 查看运行日志: gh run view <run-id> --log
+               - 查看失败的日志: gh run view <run-id> --log-failed
+
+            2. 分析代码和仓库结构
+
+            3. 如果需要修改代码，请创建一个新分支并提交 PR
+
+            请根据用户的请求进行分析，优先使用 gh CLI 获取 Actions 信息。
+
+      - name: Notify Slack
+        if: always()
+        uses: slackapi/slack-github-action@v2.0.0
+        with:
+          webhook: ${{ secrets.SLACK_WEBHOOK_URL }}
+          webhook-type: incoming-webhook
+          payload: |
+            {
+              "blocks": [
+                {
+                  "type": "section",
+                  "text": {
+                    "type": "mrkdwn",
+                    "text": "${{ job.status == 'success' && ':white_check_mark:' || job.status == 'failure' && ':x:' || ':warning:' }} *Claude Code (Issue Analysis)* - ${{ job.status }}"
+                  }
+                },
+                {
+                  "type": "context",
+                  "elements": [
+                    {
+                      "type": "mrkdwn",
+                      "text": "<${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}|查看日志> | <${{ github.event.issue.html_url }}|Issue #${{ github.event.issue.number }}> | 触发者: ${{ github.event.comment.user.login }}"
                     }
                   ]
                 }
