@@ -1,19 +1,15 @@
-name: Claude Code (comment-only + sticky + Slack)
+name: Claude Code
 
 on:
   issue_comment:
     types: [created]
 
 permissions:
-  # 核心：只读权限，从根上避免"自动建分支/自动提交"
-  contents: read
-  # 允许在 Issue/PR 上写评论
+  # 需要写权限才能让 Claude 正常工作
+  contents: write
   issues: write
-  # 允许在 PR 上写评论/更新 sticky comment
   pull-requests: write
-  # OAuth/GitHub App 模式需要 OIDC
   id-token: write
-  # 允许读取 CI 状态
   actions: read
 
 concurrency:
@@ -27,7 +23,7 @@ jobs:
     timeout-minutes: 30
 
     steps:
-      # 1) 如果这是 PR 上的评论：checkout PR head，让上下文基于 PR 分支
+      # PR 评论：checkout PR 的 head 分支，Claude 会推送到这个分支
       - name: Checkout PR head (when comment is on a PR)
         if: github.event.issue.pull_request != null
         uses: actions/checkout@v4
@@ -35,14 +31,13 @@ jobs:
           ref: refs/pull/${{ github.event.issue.number }}/head
           fetch-depth: 0
 
-      # 2) 如果这是普通 Issue：checkout 默认分支
+      # Issue 评论：checkout 默认分支，Claude 会创建新分支
       - name: Checkout default branch (when comment is on an Issue)
         if: github.event.issue.pull_request == null
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
-      # 3) Claude Code：只读模式，输出到 sticky comment
       - name: Run Claude Code
         id: claude
         uses: anthropics/claude-code-action@v1
@@ -50,20 +45,11 @@ jobs:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           use_sticky_comment: true
           show_full_output: false
+          # PR 评论时不创建新分支，直接推送到当前 checkout 的分支
+          # Issue 评论时才使用 branch_prefix 创建新分支
           claude_args: |
             --max-turns 20
-          prompt: |
-            你是仓库内的 Claude Code 助手。必须遵守以下规则：
-            1) 禁止创建分支、禁止 commit、禁止 push、禁止自动生成 PR。
-            2) 你只能在评论中输出建议：优先输出 unified diff（补丁），或输出"新文件的完整内容"（含路径）。
-            3) 如果用户要求修改某个分支/PR，请基于当前检出的工作区内容进行分析。
-            4) 输出格式要求：
-               - 先给出你理解的目标（1-2 行）
-               - 再给出修改清单（文件路径列表）
-               - 最后给出补丁（diff）或文件全文（可复制粘贴）
-            5) 默认分支为 main，不要在 main 上做任何落地写入操作。
 
-      # 4) Slack 通知：无论成功失败都通知
       - name: Notify Slack
         if: always()
         uses: slackapi/slack-github-action@v2.0.0
