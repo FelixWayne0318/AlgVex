@@ -5,15 +5,15 @@ on:
     types: [created]
 
 permissions:
-  # 核心：禁止写仓库内容 -> 从根上避免“自动建分支/自动提交”
+  # 核心：只读权限，从根上避免"自动建分支/自动提交"
   contents: read
-  # 允许在 Issue/PR 上回评论（issue_comment 走 issues API）
+  # 允许在 Issue/PR 上写评论
   issues: write
   # 允许在 PR 上写评论/更新 sticky comment
   pull-requests: write
-  # OAuth/GitHub App 模式常用到 OIDC
+  # OAuth/GitHub App 模式需要 OIDC
   id-token: write
-  # 允许读取 CI 状态（你希望 Claude 能读 Actions 结果）
+  # 允许读取 CI 状态
   actions: read
 
 concurrency:
@@ -27,7 +27,7 @@ jobs:
     timeout-minutes: 30
 
     steps:
-      # 1) 如果这是 PR 上的评论：checkout PR head，让上下文真的基于 PR 分支
+      # 1) 如果这是 PR 上的评论：checkout PR head，让上下文基于 PR 分支
       - name: Checkout PR head (when comment is on a PR)
         if: github.event.issue.pull_request != null
         uses: actions/checkout@v4
@@ -35,15 +35,15 @@ jobs:
           ref: refs/pull/${{ github.event.issue.number }}/head
           fetch-depth: 0
 
-      # 2) 如果这是普通 Issue：checkout 默认分支即可（只是为了让 Claude 能读仓库文件）
+      # 2) 如果这是普通 Issue：checkout 默认分支
       - name: Checkout default branch (when comment is on an Issue)
         if: github.event.issue.pull_request == null
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
-      # 3) Claude Code：强制“只给补丁/全文，不自动提交、不建分支”
-      - name: Run Claude Code (comment-only)
+      # 3) Claude Code：只读模式，输出到 sticky comment
+      - name: Run Claude Code
         id: claude
         uses: anthropics/claude-code-action@v1
         with:
@@ -55,29 +55,39 @@ jobs:
           prompt: |
             你是仓库内的 Claude Code 助手。必须遵守以下规则：
             1) 禁止创建分支、禁止 commit、禁止 push、禁止自动生成 PR。
-            2) 你只能在评论中输出建议：优先输出 unified diff（补丁），或输出“新文件的完整内容”（含路径）。
-            3) 如果用户要求修改某个分支/PR，请基于当前检出的工作区内容进行分析（PR 评论已 checkout PR head）。
+            2) 你只能在评论中输出建议：优先输出 unified diff（补丁），或输出"新文件的完整内容"（含路径）。
+            3) 如果用户要求修改某个分支/PR，请基于当前检出的工作区内容进行分析。
             4) 输出格式要求：
                - 先给出你理解的目标（1-2 行）
                - 再给出修改清单（文件路径列表）
                - 最后给出补丁（diff）或文件全文（可复制粘贴）
-            5) 默认分支为 main，但不要在 main 上做任何落地写入操作（只输出补丁/全文）。
+            5) 默认分支为 main，不要在 main 上做任何落地写入操作。
 
-      # 4) Slack：无论成功失败都通知
-      - name: Notify Slack (always)
+      # 4) Slack 通知：无论成功失败都通知
+      - name: Notify Slack
         if: always()
         uses: slackapi/slack-github-action@v2.0.0
         with:
           webhook: ${{ secrets.SLACK_WEBHOOK_URL }}
           webhook-type: incoming-webhook
           payload: |
-            text: "*Claude Code* 运行结果: `${{ job.status }}`\n<${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}|查看日志>\n<${{ github.event.issue.html_url }}|打开 Issue/PR #${{ github.event.issue.number }}>\n触发者: `${{ github.event.comment.user.login }}`"
-            blocks:
-              - type: section
-                text:
-                  type: mrkdwn
-                  text: "${{ job.status == 'success' && ':white_check_mark:' || job.status == 'failure' && ':x:' || ':warning:' }} *Claude Code* - `${{ job.status }}`"
-              - type: context
-                elements:
-                  - type: mrkdwn
-                    text: "<${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}|查看日志>  •  <${{ github.event.issue.html_url }}|Issue/PR #${{ github.event.issue.number }}>  •  触发者: `${{ github.event.comment.user.login }}`"
+            {
+              "blocks": [
+                {
+                  "type": "section",
+                  "text": {
+                    "type": "mrkdwn",
+                    "text": "${{ job.status == 'success' && ':white_check_mark:' || job.status == 'failure' && ':x:' || ':warning:' }} *Claude Code* - ${{ job.status }}"
+                  }
+                },
+                {
+                  "type": "context",
+                  "elements": [
+                    {
+                      "type": "mrkdwn",
+                      "text": "<${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}|查看日志> | <${{ github.event.issue.html_url }}|Issue/PR #${{ github.event.issue.number }}> | 触发者: ${{ github.event.comment.user.login }}"
+                    }
+                  ]
+                }
+              ]
+            }
