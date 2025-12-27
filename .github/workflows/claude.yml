@@ -18,7 +18,10 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  # Job 1: PR 评论触发 - 可以修改代码
+  # =============================================================
+  # Job 1: PR 评论 - 读写模式
+  # 可以：分析代码、读取 Actions、修改代码、推送到 PR 分支
+  # =============================================================
   claude-pr:
     if: ${{ (github.event_name == 'issue_comment' && github.event.issue.pull_request != null && contains(github.event.comment.body, '@claude')) || (github.event_name == 'pull_request_review_comment' && contains(github.event.comment.body, '@claude')) }}
     runs-on: ubuntu-latest
@@ -42,12 +45,25 @@ jobs:
       - name: Run Claude Code
         id: claude
         uses: anthropics/claude-code-action@v1
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           use_sticky_comment: true
           show_full_output: false
           claude_args: |
             --max-turns 20
+          prompt: |
+            你正在 PR 读写模式下运行，当前检出的是 PR 分支。
+
+            你可以：
+            1. 分析和修改当前 PR 分支的代码
+            2. 使用 gh CLI 读取 Actions 运行结果：
+               - gh run list --limit 10
+               - gh run view <run-id> --log-failed
+            3. 提交修改并推送到当前 PR 分支
+
+            修改会通过 PR 合并流程进入 main 分支。
 
       - name: Notify Slack
         if: always()
@@ -62,7 +78,7 @@ jobs:
                   "type": "section",
                   "text": {
                     "type": "mrkdwn",
-                    "text": "${{ job.status == 'success' && ':white_check_mark:' || job.status == 'failure' && ':x:' || ':warning:' }} *Claude Code (PR)* - ${{ job.status }}"
+                    "text": "${{ job.status == 'success' && ':white_check_mark:' || job.status == 'failure' && ':x:' || ':warning:' }} *Claude Code (PR 读写)* - ${{ job.status }}"
                   }
                 },
                 {
@@ -77,19 +93,30 @@ jobs:
               ]
             }
 
-  # Job 2: Issue 评论触发 - 分析模式（可读取 Actions 日志）
+  # =============================================================
+  # Job 2: Issue 评论 - 只读分析模式
+  # 可以：分析 main 分支代码、读取 Actions 日志
+  # 禁止：修改代码、创建分支、提交
+  # =============================================================
   claude-issue:
     if: ${{ github.event_name == 'issue_comment' && github.event.issue.pull_request == null && contains(github.event.comment.body, '@claude') }}
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    # Issue 分析模式使用只读权限
+    permissions:
+      contents: read
+      issues: write
+      pull-requests: read
+      actions: read
 
     steps:
-      - name: Checkout default branch
+      - name: Checkout main branch (read-only)
         uses: actions/checkout@v4
         with:
+          ref: main
           fetch-depth: 0
 
-      - name: Run Claude Code (Analysis Mode)
+      - name: Run Claude Code (Analysis Only)
         id: claude
         uses: anthropics/claude-code-action@v1
         env:
@@ -101,19 +128,25 @@ jobs:
           claude_args: |
             --max-turns 20
           prompt: |
-            你正在 Issue 分析模式下运行。你可以：
+            你正在 Issue 只读分析模式下运行，当前检出的是 main 分支。
 
-            1. 使用 gh CLI 读取 Actions 运行结果：
-               - 列出最近的运行: gh run list --limit 10
-               - 查看运行详情: gh run view <run-id>
-               - 查看运行日志: gh run view <run-id> --log
-               - 查看失败的日志: gh run view <run-id> --log-failed
+            【允许的操作】
+            1. 分析 main 分支的代码结构和逻辑
+            2. 使用 gh CLI 读取 Actions 运行结果：
+               - 列出运行: gh run list --limit 10
+               - 查看详情: gh run view <run-id>
+               - 查看日志: gh run view <run-id> --log
+               - 失败日志: gh run view <run-id> --log-failed
+            3. 在评论中输出分析结果和建议
 
-            2. 分析代码和仓库结构
+            【禁止的操作】
+            ❌ 禁止创建、修改、删除任何文件
+            ❌ 禁止执行 git commit、git push
+            ❌ 禁止创建新分支
 
-            3. 如果需要修改代码，请创建一个新分支并提交 PR
-
-            请根据用户的请求进行分析，优先使用 gh CLI 获取 Actions 信息。
+            如果用户需要修改代码，请在分析完成后建议用户：
+            1. 创建一个新的 PR
+            2. 在 PR 评论中 @claude 来执行修改
 
       - name: Notify Slack
         if: always()
@@ -128,7 +161,7 @@ jobs:
                   "type": "section",
                   "text": {
                     "type": "mrkdwn",
-                    "text": "${{ job.status == 'success' && ':white_check_mark:' || job.status == 'failure' && ':x:' || ':warning:' }} *Claude Code (Issue Analysis)* - ${{ job.status }}"
+                    "text": "${{ job.status == 'success' && ':white_check_mark:' || job.status == 'failure' && ':x:' || ':warning:' }} *Claude Code (Issue 分析)* - ${{ job.status }}"
                   }
                 },
                 {
