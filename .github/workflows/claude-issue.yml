@@ -3,6 +3,7 @@
 # - 只读分析模式：禁止修改代码、创建分支、推送
 # - 可读取 Actions 日志并生成摘要
 # - 用于普通 Issue（非 PR）的代码分析和问题诊断
+# Updated: 2025-12-28T08:00:00Z - Force workflow re-registration
 # ============================================================
 name: Claude Code (Issue Read-Only)
 
