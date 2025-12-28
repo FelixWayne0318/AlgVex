@@ -25,12 +25,12 @@ jobs:
             exit 1
           fi
 
-          # 检查 workflow 文件语法
-          echo "Checking workflow files..."
-          for f in .github/workflows/*.yml; do
-            if [ -f "$f" ]; then
-              echo "✅ $f exists"
-            fi
-          done
+          # 检查测试文件（故意失败用于测试 CI 修复功能）
+          if [ -f "tests/test_main.py" ]; then
+            echo "✅ tests/test_main.py exists"
+          else
+            echo "❌ tests/test_main.py not found"
+            exit 1
+          fi
 
           echo "CI checks passed!"
