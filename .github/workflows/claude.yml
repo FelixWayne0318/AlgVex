@@ -71,11 +71,20 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          pr_json="$(gh api "repos/$REPO/pulls/$PR_NUMBER")"
+          if ! pr_json="$(gh api "repos/$REPO/pulls/$PR_NUMBER" 2>&1)"; then
+            echo "::error::无法获取 PR #$PR_NUMBER 信息: $pr_json"
+            exit 1
+          fi
+
           head_repo="$(echo "$pr_json" | jq -r '.head.repo.full_name')"
           head_ref="$(echo "$pr_json" | jq -r '.head.ref')"
           base_ref="$(echo "$pr_json" | jq -r '.base.ref')"
           pr_html="$(echo "$pr_json" | jq -r '.html_url')"
+
+          if [[ -z "$head_ref" || "$head_ref" == "null" ]]; then
+            echo "::error::无法解析 PR head 分支信息"
+            exit 1
+          fi
 
           echo "head_repo=$head_repo" >> "$GITHUB_OUTPUT"
           echo "head_ref=$head_ref" >> "$GITHUB_OUTPUT"
@@ -271,7 +280,7 @@ PROMPT_EOF
           claude_args: "--max-turns 20"
 
       - name: Notify Slack
-        if: always()
+        if: ${{ always() && secrets.SLACK_WEBHOOK_URL != '' }}
         uses: slackapi/slack-github-action@v2.0.0
         with:
           webhook: ${{ secrets.SLACK_WEBHOOK_URL }}

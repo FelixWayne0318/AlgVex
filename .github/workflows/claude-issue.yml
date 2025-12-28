@@ -56,10 +56,10 @@ jobs:
 
           echo "run_id=$run_id" >> "$GITHUB_OUTPUT"
 
-      - name: Checkout main branch (read-only)
+      - name: Checkout default branch (read-only)
         uses: actions/checkout@v4
         with:
-          ref: main
+          ref: ${{ github.event.repository.default_branch }}
           fetch-depth: 0
 
       - name: Build CI context
@@ -80,9 +80,10 @@ jobs:
           echo "" >> "$summary_md"
 
           run_id="$RUN_ID"
+          default_branch="${{ github.event.repository.default_branch }}"
           if [[ -z "$run_id" ]]; then
-            # fallback：取 main 分支最新一次 workflow run
-            runs_json="$(gh api "repos/$REPO/actions/runs?branch=main&per_page=1")"
+            # fallback：取默认分支最新一次 workflow run
+            runs_json="$(gh api "repos/$REPO/actions/runs?branch=$default_branch&per_page=1")"
             run_id="$(echo "$runs_json" | jq -r '.workflow_runs[0].id // empty')"
           fi
 
@@ -96,7 +97,16 @@ jobs:
             exit 0
           fi
 
-          run_json="$(gh api "repos/$REPO/actions/runs/$run_id")"
+          if ! run_json="$(gh api "repos/$REPO/actions/runs/$run_id" 2>&1)"; then
+            echo "::warning::无法获取 Actions run #$run_id 信息: $run_json"
+            echo "- Unable to fetch Actions run details." >> "$summary_md"
+            {
+              echo "ci_md<<EOF"
+              cat "$summary_md"
+              echo "EOF"
+            } >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
           run_url="$(echo "$run_json" | jq -r '.html_url')"
           run_status="$(echo "$run_json" | jq -r '.status')"
           run_conclusion="$(echo "$run_json" | jq -r '.conclusion')"
@@ -205,7 +215,7 @@ PROMPT_EOF
           claude_args: "--max-turns 12"
 
       - name: Notify Slack
-        if: always()
+        if: ${{ always() && secrets.SLACK_WEBHOOK_URL != '' }}
         uses: slackapi/slack-github-action@v2.0.0
         with:
           webhook: ${{ secrets.SLACK_WEBHOOK_URL }}
