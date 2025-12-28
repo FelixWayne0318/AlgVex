@@ -84,8 +84,17 @@ GitHub 事件
 ```yaml
 timeout-minutes: 30          # 最长运行 30 分钟
 use_sticky_comment: "true"   # 使用固定评论，避免刷屏
-allowed_bots: "dependabot[bot],renovate[bot]"  # 允许的 bot
+allowed_bots: "dependabot[bot],renovate[bot],claude[bot]"  # 允许的 bot
 ```
+
+**允许工具**：
+```yaml
+claude_args: |
+  --allowedTools "WebSearch,WebFetch,Bash(gh search:*)"
+```
+- `WebSearch`: 启用网络搜索功能，可搜索互联网信息
+- `WebFetch`: 启用网页抓取功能，可获取和分析网页内容
+- `Bash(gh search:*)`: 启用 GitHub CLI 搜索功能，可搜索 GitHub 上的仓库、代码、Issue 和 PR
 
 **权限配置**：
 ```yaml
