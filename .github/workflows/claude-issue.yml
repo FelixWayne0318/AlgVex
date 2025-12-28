@@ -119,18 +119,23 @@ jobs:
           echo "- Created: $run_created" >> "$summary_md"
           echo "" >> "$summary_md"
 
-          jobs_json="$(gh api "repos/$REPO/actions/runs/$run_id/jobs?per_page=100")"
           echo "### Failed jobs/steps summary" >> "$summary_md"
           echo "" >> "$summary_md"
-          echo "$jobs_json" | jq -r '
-            .jobs[]
-            | select(.conclusion != "success")
-            | "- Job: \(.name) (conclusion=\(.conclusion))\n"
-              + ( .steps[]
-                  | select(.conclusion != "success" and .conclusion != null)
-                  | "  - Step: \(.name) (conclusion=\(.conclusion))"
-                )
-          ' >> "$summary_md" || true
+
+          if ! jobs_json="$(gh api "repos/$REPO/actions/runs/$run_id/jobs?per_page=100" 2>&1)"; then
+            echo "::warning::无法获取 Jobs 信息: $jobs_json"
+            echo "- Unable to fetch jobs details." >> "$summary_md"
+          else
+            echo "$jobs_json" | jq -r '
+              .jobs[]
+              | select(.conclusion != "success")
+              | "- Job: \(.name) (conclusion=\(.conclusion))\n"
+                + ( .steps[]
+                    | select(.conclusion != "success" and .conclusion != null)
+                    | "  - Step: \(.name) (conclusion=\(.conclusion))"
+                  )
+            ' >> "$summary_md" || true
+          fi
           echo "" >> "$summary_md"
 
           echo "### Key log snippets (truncated)" >> "$summary_md"
