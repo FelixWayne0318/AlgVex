@@ -3,6 +3,7 @@
 # - 默认 PLAN 模式：只分析不改代码
 # - 包含 "apply" 才进入 APPLY 模式：允许修改并提交推送到 PR head 分支
 # - 自动拉取与该 PR 相关的最新 Actions run 作为上下文
+# Updated: 2025-12-28T08:00:00Z - Force workflow re-registration
 # ============================================================
 name: Claude Code (PR)
 
