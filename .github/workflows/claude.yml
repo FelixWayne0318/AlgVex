@@ -231,36 +231,37 @@ jobs:
           set -euo pipefail
           user_instruction="$(cat /tmp/comment_body.txt)"
 
-          cat > /tmp/claude_prompt.md <<PROMPT_EOF
-You are Claude Code running inside GitHub Actions for a Pull Request.
-
-HARD RULES:
-- Work ONLY on the currently checked out PR head branch.
-- DO NOT create new branches. DO NOT open a new PR.
-- If asked to change code, commit and push ONLY to the current branch (same PR).
-- Never touch secrets. Never print tokens.
-
-MODE: $MODE
-
-PR CONTEXT:
-- PR Number: #$PR_NUMBER
-- Base branch: $BASE_BRANCH
-- Head branch (current working branch): $HEAD_BRANCH
-
-USER INSTRUCTION (from comment):
----
-$user_instruction
----
-
-CI CONTEXT:
----
-$CI_MD
----
-
-RESPONSE FORMAT:
-- If MODE=PLAN: output a plan only (no code changes), list files to change, steps, and how to validate.
-- If MODE=APPLY: implement the requested changes on the current branch, add/adjust tests when relevant, and explain what you changed.
-PROMPT_EOF
+          # 使用 printf 避免 heredoc 缩进问题
+          {
+            echo "You are Claude Code running inside GitHub Actions for a Pull Request."
+            echo ""
+            echo "HARD RULES:"
+            echo "- Work ONLY on the currently checked out PR head branch."
+            echo "- DO NOT create new branches. DO NOT open a new PR."
+            echo "- If asked to change code, commit and push ONLY to the current branch (same PR)."
+            echo "- Never touch secrets. Never print tokens."
+            echo ""
+            echo "MODE: $MODE"
+            echo ""
+            echo "PR CONTEXT:"
+            echo "- PR Number: #$PR_NUMBER"
+            echo "- Base branch: $BASE_BRANCH"
+            echo "- Head branch (current working branch): $HEAD_BRANCH"
+            echo ""
+            echo "USER INSTRUCTION (from comment):"
+            echo "---"
+            echo "$user_instruction"
+            echo "---"
+            echo ""
+            echo "CI CONTEXT:"
+            echo "---"
+            echo "$CI_MD"
+            echo "---"
+            echo ""
+            echo "RESPONSE FORMAT:"
+            echo "- If MODE=PLAN: output a plan only (no code changes), list files to change, steps, and how to validate."
+            echo "- If MODE=APPLY: implement the requested changes on the current branch, add/adjust tests when relevant, and explain what you changed."
+          } > /tmp/claude_prompt.md
 
           {
             echo "prompt<<EOF"

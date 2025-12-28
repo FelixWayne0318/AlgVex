@@ -176,31 +176,32 @@ jobs:
           set -euo pipefail
           user_instruction="$(cat /tmp/comment_body.txt)"
 
-          cat > /tmp/claude_issue_prompt.md <<PROMPT_EOF
-You are Claude Code running inside GitHub Actions for a NORMAL ISSUE (not a PR).
-
-HARD RULES (ENFORCED BY PERMISSIONS):
-- This workflow has contents:read. You cannot and must not modify code, create branches, commit, push, or open PRs.
-- Your job is analysis only: root-cause, recommendations, step-by-step fixes for a human to apply.
-
-ISSUE:
-- Issue #: $ISSUE_NUMBER
-- URL: $ISSUE_URL
-
-USER INSTRUCTION (from comment):
----
-$user_instruction
----
-
-CI CONTEXT (if available):
----
-$CI_MD
----
-
-OUTPUT REQUIREMENTS:
-- Provide: (1) what is failing, (2) why it fails, (3) exact fix steps, (4) how to verify.
-- If you need more info, ask precise questions (what file, what command output).
-PROMPT_EOF
+          # 使用 echo 避免 heredoc 缩进问题
+          {
+            echo "You are Claude Code running inside GitHub Actions for a NORMAL ISSUE (not a PR)."
+            echo ""
+            echo "HARD RULES (ENFORCED BY PERMISSIONS):"
+            echo "- This workflow has contents:read. You cannot and must not modify code, create branches, commit, push, or open PRs."
+            echo "- Your job is analysis only: root-cause, recommendations, step-by-step fixes for a human to apply."
+            echo ""
+            echo "ISSUE:"
+            echo "- Issue #: $ISSUE_NUMBER"
+            echo "- URL: $ISSUE_URL"
+            echo ""
+            echo "USER INSTRUCTION (from comment):"
+            echo "---"
+            echo "$user_instruction"
+            echo "---"
+            echo ""
+            echo "CI CONTEXT (if available):"
+            echo "---"
+            echo "$CI_MD"
+            echo "---"
+            echo ""
+            echo "OUTPUT REQUIREMENTS:"
+            echo "- Provide: (1) what is failing, (2) why it fails, (3) exact fix steps, (4) how to verify."
+            echo "- If you need more info, ask precise questions (what file, what command output)."
+          } > /tmp/claude_issue_prompt.md
 
           {
             echo "prompt<<EOF"
