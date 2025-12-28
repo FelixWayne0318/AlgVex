@@ -43,4 +43,4 @@ jobs:
           use_sticky_comment: "true"
           allowed_bots: "dependabot[bot],renovate[bot],claude[bot]"
           claude_args: |
-            --allowedTools "WebSearch,WebFetch,Bash(gh search:*)"
+            --allowedTools "WebSearch,WebFetch,Bash(gh search:*),mcp__github__get_issue,mcp__github__search_issues,mcp__github__list_issues,mcp__github__create_issue_comment"
