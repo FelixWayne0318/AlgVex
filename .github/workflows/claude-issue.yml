@@ -1,0 +1,227 @@
+# ============================================================
+# Claude Code (Issue Read-Only) 工作流
+# - 只读分析模式：禁止修改代码、创建分支、推送
+# - 可读取 Actions 日志并生成摘要
+# - 用于普通 Issue（非 PR）的代码分析和问题诊断
+# ============================================================
+name: Claude Code (Issue Read-Only)
+
+on:
+  issue_comment:
+    types: [created]
+
+permissions:
+  contents: read
+  issues: write
+  pull-requests: read
+  id-token: write
+  actions: read
+
+concurrency:
+  group: claude-issue-${{ github.event.issue.number }}
+  cancel-in-progress: false
+
+jobs:
+  claude_issue:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    # 仅普通 Issue（不是 PR），且评论包含 @claude
+    if: >
+      github.event.issue.pull_request == null &&
+      contains(github.event.comment.body, '@claude')
+
+    steps:
+      - name: Extract optional run_id from comment
+        id: rid
+        env:
+          COMMENT_BODY: ${{ github.event.comment.body }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          # 保存 comment body 到文件避免注入
+          printf '%s' "$COMMENT_BODY" > /tmp/comment_body.txt
+          body="$(cat /tmp/comment_body.txt)"
+          run_id=""
+
+          # 1) run_id=123456
+          if echo "$body" | grep -Eo 'run_id[[:space:]]*=[[:space:]]*[0-9]+' >/dev/null 2>&1; then
+            run_id="$(echo "$body" | grep -Eo 'run_id[[:space:]]*=[[:space:]]*[0-9]+' | head -n 1 | grep -Eo '[0-9]+')"
+          fi
+
+          # 2) URL: .../actions/runs/123456
+          if [[ -z "$run_id" ]] && echo "$body" | grep -Eo 'actions/runs/[0-9]+' >/dev/null 2>&1; then
+            run_id="$(echo "$body" | grep -Eo 'actions/runs/[0-9]+' | head -n 1 | grep -Eo '[0-9]+')"
+          fi
+
+          echo "run_id=$run_id" >> "$GITHUB_OUTPUT"
+
+      - name: Checkout main branch (read-only)
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+
+      - name: Build CI context
+        id: ci
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          RUN_ID: ${{ steps.rid.outputs.run_id }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          mkdir -p /tmp/ci
+          summary_md="/tmp/ci/ci_context.md"
+          : > "$summary_md"
+
+          echo "## CI Context (Issue Read-Only)" >> "$summary_md"
+          echo "" >> "$summary_md"
+
+          run_id="$RUN_ID"
+          if [[ -z "$run_id" ]]; then
+            # fallback：取 main 分支最新一次 workflow run
+            runs_json="$(gh api "repos/$REPO/actions/runs?branch=main&per_page=1")"
+            run_id="$(echo "$runs_json" | jq -r '.workflow_runs[0].id // empty')"
+          fi
+
+          if [[ -z "$run_id" ]]; then
+            echo "- No Actions run found. If you want CI analysis, paste a run link or use run_id=xxxx" >> "$summary_md"
+            {
+              echo "ci_md<<EOF"
+              cat "$summary_md"
+              echo "EOF"
+            } >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          run_json="$(gh api "repos/$REPO/actions/runs/$run_id")"
+          run_url="$(echo "$run_json" | jq -r '.html_url')"
+          run_status="$(echo "$run_json" | jq -r '.status')"
+          run_conclusion="$(echo "$run_json" | jq -r '.conclusion')"
+          run_name="$(echo "$run_json" | jq -r '.name')"
+          run_created="$(echo "$run_json" | jq -r '.created_at')"
+
+          echo "- Run: $run_name" >> "$summary_md"
+          echo "- URL: $run_url" >> "$summary_md"
+          echo "- Status: $run_status / Conclusion: $run_conclusion" >> "$summary_md"
+          echo "- Created: $run_created" >> "$summary_md"
+          echo "" >> "$summary_md"
+
+          jobs_json="$(gh api "repos/$REPO/actions/runs/$run_id/jobs?per_page=100")"
+          echo "### Failed jobs/steps summary" >> "$summary_md"
+          echo "" >> "$summary_md"
+          echo "$jobs_json" | jq -r '
+            .jobs[]
+            | select(.conclusion != "success")
+            | "- Job: \(.name) (conclusion=\(.conclusion))\n"
+              + ( .steps[]
+                  | select(.conclusion != "success" and .conclusion != null)
+                  | "  - Step: \(.name) (conclusion=\(.conclusion))"
+                )
+          ' >> "$summary_md" || true
+          echo "" >> "$summary_md"
+
+          echo "### Key log snippets (truncated)" >> "$summary_md"
+          echo "" >> "$summary_md"
+          log_zip="/tmp/ci/logs.zip"
+          if gh api "repos/$REPO/actions/runs/$run_id/logs" --output "$log_zip" >/dev/null 2>&1; then
+            unzip -q -o "$log_zip" -d /tmp/ci/logs || true
+            matches="/tmp/ci/log_matches.txt"
+            : > "$matches"
+            grep -RInE "(^|\s)(error|failed|exception|traceback|fatal|assertion|not found|permission|401|403|404)(\s|:)" /tmp/ci/logs 2>/dev/null \
+              | head -n 200 >> "$matches" || true
+
+            if [[ -s "$matches" ]]; then
+              echo '```' >> "$summary_md"
+              cat "$matches" >> "$summary_md"
+              echo '```' >> "$summary_md"
+            else
+              echo "- No obvious error keywords found in logs." >> "$summary_md"
+            fi
+          else
+            echo "- Unable to download logs zip." >> "$summary_md"
+          fi
+
+          {
+            echo "ci_md<<EOF"
+            cat "$summary_md"
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Build Claude prompt (Issue = Read-Only)
+        id: prompt
+        env:
+          ISSUE_NUMBER: ${{ github.event.issue.number }}
+          ISSUE_URL: ${{ github.event.issue.html_url }}
+          CI_MD: ${{ steps.ci.outputs.ci_md }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          user_instruction="$(cat /tmp/comment_body.txt)"
+
+          cat > /tmp/claude_issue_prompt.md <<PROMPT_EOF
+You are Claude Code running inside GitHub Actions for a NORMAL ISSUE (not a PR).
+
+HARD RULES (ENFORCED BY PERMISSIONS):
+- This workflow has contents:read. You cannot and must not modify code, create branches, commit, push, or open PRs.
+- Your job is analysis only: root-cause, recommendations, step-by-step fixes for a human to apply.
+
+ISSUE:
+- Issue #: $ISSUE_NUMBER
+- URL: $ISSUE_URL
+
+USER INSTRUCTION (from comment):
+---
+$user_instruction
+---
+
+CI CONTEXT (if available):
+---
+$CI_MD
+---
+
+OUTPUT REQUIREMENTS:
+- Provide: (1) what is failing, (2) why it fails, (3) exact fix steps, (4) how to verify.
+- If you need more info, ask precise questions (what file, what command output).
+PROMPT_EOF
+
+          {
+            echo "prompt<<EOF"
+            cat /tmp/claude_issue_prompt.md
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Run Claude Code (Issue Read-Only)
+        uses: anthropics/claude-code-action@v1
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          use_sticky_comment: true
+          show_full_output: false
+          prompt: ${{ steps.prompt.outputs.prompt }}
+          allowed_tools: "Glob,Grep,Read,LS,View"
+          disallowed_tools: "Edit,MultiEdit,Write,Bash,WebSearch,WebFetch"
+          claude_args: "--max-turns 12"
+
+      - name: Notify Slack
+        if: always()
+        uses: slackapi/slack-github-action@v2.0.0
+        with:
+          webhook: ${{ secrets.SLACK_WEBHOOK_URL }}
+          webhook-type: incoming-webhook
+          payload: |
+            {
+              "blocks": [
+                {
+                  "type": "section",
+                  "text": { "type": "mrkdwn", "text": "${{ job.status == 'success' && ':white_check_mark:' || job.status == 'failure' && ':x:' || ':warning:' }} *Claude Issue (Read-Only)* - ${{ job.status }}" }
+                },
+                {
+                  "type": "context",
+                  "elements": [
+                    { "type": "mrkdwn", "text": "<${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}|查看日志> · <${{ github.event.issue.html_url }}|Issue #${{ github.event.issue.number }}> · 触发者: ${{ github.event.comment.user.login }}" }
+                  ]
+                }
+              ]
+            }
