@@ -1,4 +1,10 @@
-name: Claude Code
+# ============================================================
+# Claude Code (PR) 工作流
+# - 默认 PLAN 模式：只分析不改代码
+# - 包含 "apply" 才进入 APPLY 模式：允许修改并提交推送到 PR head 分支
+# - 自动拉取与该 PR 相关的最新 Actions run 作为上下文
+# ============================================================
+name: Claude Code (PR)
 
 on:
   issue_comment:
@@ -8,65 +14,261 @@ on:
 
 permissions:
   contents: write
-  issues: write
   pull-requests: write
+  issues: write
   id-token: write
   actions: read
 
 concurrency:
-  group: claude-${{ github.event.pull_request.number || github.event.issue.number }}
+  group: claude-pr-${{ github.event.pull_request.number || github.event.issue.number }}
   cancel-in-progress: false
 
 jobs:
-  # =============================================================
-  # Job 1: PR 评论 - 读写模式
-  # 可以：分析代码、读取 Actions、修改代码、推送到 PR 分支
-  # =============================================================
-  claude-pr:
-    if: ${{ (github.event_name == 'issue_comment' && github.event.issue.pull_request != null && contains(github.event.comment.body, '@claude')) || (github.event_name == 'pull_request_review_comment' && contains(github.event.comment.body, '@claude')) }}
+  claude:
     runs-on: ubuntu-latest
     timeout-minutes: 30
 
+    # 只响应 PR 评论（issue_comment 且 issue.pull_request != null）或 PR review comment
+    if: >
+      (github.event_name == 'issue_comment' &&
+        github.event.issue.pull_request != null &&
+        contains(github.event.comment.body, '@claude')) ||
+      (github.event_name == 'pull_request_review_comment' &&
+        contains(github.event.comment.body, '@claude'))
+
     steps:
-      # 获取 PR 的实际分支名（issue_comment 事件需要）
-      - name: Get PR branch name
-        id: pr-branch
-        if: ${{ github.event_name == 'issue_comment' && github.event.issue.pull_request != null }}
+      - name: Compute PR number and trigger info
+        id: trig
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          EVENT_NAME: ${{ github.event_name }}
+          ISSUE_NUMBER: ${{ github.event.issue.number }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          COMMENT_BODY: ${{ github.event.comment.body }}
+          COMMENT_USER: ${{ github.event.comment.user.login }}
+          COMMENT_URL: ${{ github.event.comment.html_url }}
+          SENDER_LOGIN: ${{ github.event.sender.login }}
+        shell: bash
         run: |
-          PR_NUMBER=${{ github.event.issue.number }}
-          BRANCH_NAME=$(gh pr view $PR_NUMBER --repo ${{ github.repository }} --json headRefName --jq '.headRefName')
-          echo "branch=$BRANCH_NAME" >> $GITHUB_OUTPUT
-          echo "PR #$PR_NUMBER branch: $BRANCH_NAME"
+          set -euo pipefail
+          if [[ "$EVENT_NAME" == "issue_comment" ]]; then
+            echo "pr_number=$ISSUE_NUMBER" >> "$GITHUB_OUTPUT"
+            echo "trigger_user=$COMMENT_USER" >> "$GITHUB_OUTPUT"
+            echo "trigger_url=$COMMENT_URL" >> "$GITHUB_OUTPUT"
+          else
+            echo "pr_number=$PR_NUMBER" >> "$GITHUB_OUTPUT"
+            echo "trigger_user=$SENDER_LOGIN" >> "$GITHUB_OUTPUT"
+            echo "trigger_url=$COMMENT_URL" >> "$GITHUB_OUTPUT"
+          fi
+          # 保存 comment body 到文件避免注入
+          printf '%s' "$COMMENT_BODY" > /tmp/comment_body.txt
 
-      # PR 会话评论：checkout 实际分支（可 push）
-      - name: Checkout PR branch (Issue comment)
-        if: ${{ github.event_name == 'issue_comment' && github.event.issue.pull_request != null }}
-        uses: actions/checkout@v4
-        with:
-          ref: ${{ steps.pr-branch.outputs.branch }}
-          fetch-depth: 0
-
-      # PR 代码审查评论：checkout 实际分支
-      - name: Checkout PR branch (Review comment)
-        if: ${{ github.event_name == 'pull_request_review_comment' }}
-        uses: actions/checkout@v4
-        with:
-          ref: ${{ github.event.pull_request.head.ref }}
-          fetch-depth: 0
-
-      - name: Run Claude Code
-        id: claude
-        uses: anthropics/claude-code-action@v1
+      - name: Fetch PR head info
+        id: pr
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ steps.trig.outputs.pr_number }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          pr_json="$(gh api "repos/$REPO/pulls/$PR_NUMBER")"
+          head_repo="$(echo "$pr_json" | jq -r '.head.repo.full_name')"
+          head_ref="$(echo "$pr_json" | jq -r '.head.ref')"
+          base_ref="$(echo "$pr_json" | jq -r '.base.ref')"
+          pr_html="$(echo "$pr_json" | jq -r '.html_url')"
+
+          echo "head_repo=$head_repo" >> "$GITHUB_OUTPUT"
+          echo "head_ref=$head_ref" >> "$GITHUB_OUTPUT"
+          echo "base_ref=$base_ref" >> "$GITHUB_OUTPUT"
+          echo "pr_html=$pr_html" >> "$GITHUB_OUTPUT"
+
+      - name: Checkout PR head branch
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ steps.pr.outputs.head_repo }}
+          ref: ${{ steps.pr.outputs.head_ref }}
+          fetch-depth: 0
+
+      - name: Decide mode (PLAN by default; APPLY if comment contains 'apply')
+        id: mode
+        shell: bash
+        run: |
+          set -euo pipefail
+          body="$(cat /tmp/comment_body.txt)"
+          body_lc="$(echo "$body" | tr '[:upper:]' '[:lower:]')"
+
+          if echo "$body_lc" | grep -Eq '(^|[[:space:]])apply($|[[:space:]])'; then
+            echo "mode=APPLY" >> "$GITHUB_OUTPUT"
+          else
+            echo "mode=PLAN" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Collect latest Actions context for this PR
+        id: ci
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ steps.trig.outputs.pr_number }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          mkdir -p /tmp/ci
+          summary_md="/tmp/ci/ci_context.md"
+          : > "$summary_md"
+
+          echo "## CI Context (PR #$PR_NUMBER)" >> "$summary_md"
+          echo "" >> "$summary_md"
+
+          runs_json="$(gh api "repos/$REPO/actions/runs?event=pull_request&per_page=50")"
+          run_id="$(echo "$runs_json" | jq -r --arg pr "$PR_NUMBER" '
+            .workflow_runs
+            | map(select(.pull_requests | any(.number == ($pr|tonumber))))
+            | sort_by(.created_at) | reverse
+            | .[0].id // empty
+          ')"
+
+          if [[ -z "$run_id" ]]; then
+            echo "- No pull_request workflow run found for this PR yet." >> "$summary_md"
+            echo "run_id=" >> "$GITHUB_OUTPUT"
+            {
+              echo "ci_md<<EOF"
+              cat "$summary_md"
+              echo "EOF"
+            } >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          run_json="$(gh api "repos/$REPO/actions/runs/$run_id")"
+          run_url="$(echo "$run_json" | jq -r '.html_url')"
+          run_status="$(echo "$run_json" | jq -r '.status')"
+          run_conclusion="$(echo "$run_json" | jq -r '.conclusion')"
+          run_name="$(echo "$run_json" | jq -r '.name')"
+          run_created="$(echo "$run_json" | jq -r '.created_at')"
+
+          echo "- Run: $run_name" >> "$summary_md"
+          echo "- URL: $run_url" >> "$summary_md"
+          echo "- Status: $run_status / Conclusion: $run_conclusion" >> "$summary_md"
+          echo "- Created: $run_created" >> "$summary_md"
+          echo "" >> "$summary_md"
+
+          jobs_json="$(gh api "repos/$REPO/actions/runs/$run_id/jobs?per_page=100")"
+          echo "### Failed jobs/steps summary" >> "$summary_md"
+          echo "" >> "$summary_md"
+
+          echo "$jobs_json" | jq -r '
+            .jobs[]
+            | select(.conclusion != "success")
+            | "- Job: \(.name) (conclusion=\(.conclusion))\n"
+              + ( .steps[]
+                  | select(.conclusion != "success" and .conclusion != null)
+                  | "  - Step: \(.name) (conclusion=\(.conclusion))"
+                )
+          ' >> "$summary_md" || true
+
+          echo "" >> "$summary_md"
+
+          echo "### Key log snippets (truncated)" >> "$summary_md"
+          echo "" >> "$summary_md"
+
+          log_zip="/tmp/ci/logs.zip"
+          if gh api "repos/$REPO/actions/runs/$run_id/logs" --output "$log_zip" >/dev/null 2>&1; then
+            unzip -q -o "$log_zip" -d /tmp/ci/logs || true
+            matches="/tmp/ci/log_matches.txt"
+            : > "$matches"
+            grep -RInE "(^|\s)(error|failed|exception|traceback|fatal|assertion|not found|permission|401|403|404)(\s|:)" /tmp/ci/logs 2>/dev/null \
+              | head -n 200 >> "$matches" || true
+
+            if [[ -s "$matches" ]]; then
+              echo '```' >> "$summary_md"
+              cat "$matches" >> "$summary_md"
+              echo '```' >> "$summary_md"
+            else
+              echo "- No obvious error keywords found in logs." >> "$summary_md"
+            fi
+          else
+            echo "- Unable to download logs zip." >> "$summary_md"
+          fi
+
+          echo "run_id=$run_id" >> "$GITHUB_OUTPUT"
+          {
+            echo "ci_md<<EOF"
+            cat "$summary_md"
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Build Claude prompt
+        id: prompt
+        env:
+          MODE: ${{ steps.mode.outputs.mode }}
+          PR_NUMBER: ${{ steps.trig.outputs.pr_number }}
+          HEAD_BRANCH: ${{ steps.pr.outputs.head_ref }}
+          BASE_BRANCH: ${{ steps.pr.outputs.base_ref }}
+          CI_MD: ${{ steps.ci.outputs.ci_md }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          user_instruction="$(cat /tmp/comment_body.txt)"
+
+          cat > /tmp/claude_prompt.md <<PROMPT_EOF
+You are Claude Code running inside GitHub Actions for a Pull Request.
+
+HARD RULES:
+- Work ONLY on the currently checked out PR head branch.
+- DO NOT create new branches. DO NOT open a new PR.
+- If asked to change code, commit and push ONLY to the current branch (same PR).
+- Never touch secrets. Never print tokens.
+
+MODE: $MODE
+
+PR CONTEXT:
+- PR Number: #$PR_NUMBER
+- Base branch: $BASE_BRANCH
+- Head branch (current working branch): $HEAD_BRANCH
+
+USER INSTRUCTION (from comment):
+---
+$user_instruction
+---
+
+CI CONTEXT:
+---
+$CI_MD
+---
+
+RESPONSE FORMAT:
+- If MODE=PLAN: output a plan only (no code changes), list files to change, steps, and how to validate.
+- If MODE=APPLY: implement the requested changes on the current branch, add/adjust tests when relevant, and explain what you changed.
+PROMPT_EOF
+
+          {
+            echo "prompt<<EOF"
+            cat /tmp/claude_prompt.md
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Run Claude Code (PLAN mode)
+        if: steps.mode.outputs.mode == 'PLAN'
+        uses: anthropics/claude-code-action@v1
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           use_sticky_comment: true
           show_full_output: false
-          claude_args: |
-            --max-turns 20
+          prompt: ${{ steps.prompt.outputs.prompt }}
+          allowed_tools: "Glob,Grep,Read,LS,View"
+          disallowed_tools: "Edit,MultiEdit,Write,Bash,WebSearch,WebFetch"
+          claude_args: "--max-turns 20"
+
+      - name: Run Claude Code (APPLY mode)
+        if: steps.mode.outputs.mode == 'APPLY'
+        uses: anthropics/claude-code-action@v1
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          use_sticky_comment: true
+          show_full_output: false
+          prompt: ${{ steps.prompt.outputs.prompt }}
+          disallowed_tools: "WebSearch,WebFetch"
+          claude_args: "--max-turns 20"
 
       - name: Notify Slack
         if: always()
@@ -79,82 +281,12 @@ jobs:
               "blocks": [
                 {
                   "type": "section",
-                  "text": {
-                    "type": "mrkdwn",
-                    "text": "${{ job.status == 'success' && ':white_check_mark:' || job.status == 'failure' && ':x:' || ':warning:' }} *Claude Code (PR 读写)* - ${{ job.status }}"
-                  }
+                  "text": { "type": "mrkdwn", "text": "${{ job.status == 'success' && ':white_check_mark:' || job.status == 'failure' && ':x:' || ':warning:' }} *Claude PR (${{ steps.mode.outputs.mode }})* - ${{ job.status }}" }
                 },
                 {
                   "type": "context",
                   "elements": [
-                    {
-                      "type": "mrkdwn",
-                      "text": "<${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}|查看日志> | <${{ github.event.issue.html_url || github.event.pull_request.html_url }}|PR #${{ github.event.issue.number || github.event.pull_request.number }}> | 触发者: ${{ github.event.comment.user.login }}"
-                    }
-                  ]
-                }
-              ]
-            }
-
-  # =============================================================
-  # Job 2: Issue 评论 - 只读分析模式
-  # 可以：分析 main 分支代码、读取 Actions 日志
-  # 禁止：修改代码、创建分支、提交
-  # =============================================================
-  claude-issue:
-    if: ${{ github.event_name == 'issue_comment' && github.event.issue.pull_request == null && contains(github.event.comment.body, '@claude') }}
-    runs-on: ubuntu-latest
-    timeout-minutes: 30
-    # Issue 分析模式使用只读权限
-    permissions:
-      contents: read
-      issues: write
-      pull-requests: read
-      actions: read
-      id-token: write  # OAuth token 需要 OIDC
-
-    steps:
-      - name: Checkout main branch (read-only)
-        uses: actions/checkout@v4
-        with:
-          ref: main
-          fetch-depth: 0
-
-      - name: Run Claude Code (Analysis Only)
-        id: claude
-        uses: anthropics/claude-code-action@v1
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        with:
-          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
-          use_sticky_comment: true
-          show_full_output: false
-          claude_args: |
-            --max-turns 20
-
-      - name: Notify Slack
-        if: always()
-        uses: slackapi/slack-github-action@v2.0.0
-        with:
-          webhook: ${{ secrets.SLACK_WEBHOOK_URL }}
-          webhook-type: incoming-webhook
-          payload: |
-            {
-              "blocks": [
-                {
-                  "type": "section",
-                  "text": {
-                    "type": "mrkdwn",
-                    "text": "${{ job.status == 'success' && ':white_check_mark:' || job.status == 'failure' && ':x:' || ':warning:' }} *Claude Code (Issue 分析)* - ${{ job.status }}"
-                  }
-                },
-                {
-                  "type": "context",
-                  "elements": [
-                    {
-                      "type": "mrkdwn",
-                      "text": "<${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}|查看日志> | <${{ github.event.issue.html_url }}|Issue #${{ github.event.issue.number }}> | 触发者: ${{ github.event.comment.user.login }}"
-                    }
+                    { "type": "mrkdwn", "text": "<${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}|查看日志> · <${{ steps.pr.outputs.pr_html }}|PR #${{ steps.trig.outputs.pr_number }}> · 触发者: ${{ steps.trig.outputs.trigger_user }}" }
                   ]
                 }
               ]
