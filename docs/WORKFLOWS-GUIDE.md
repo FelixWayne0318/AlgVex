@@ -90,11 +90,15 @@ allowed_bots: "dependabot[bot],renovate[bot],claude[bot]"  # 允许的 bot
 **允许工具**：
 ```yaml
 claude_args: |
-  --allowedTools "WebSearch,WebFetch,Bash(gh search:*)"
+  --allowedTools "WebSearch,WebFetch,Bash(gh search:*),mcp__github__get_issue,mcp__github__search_issues,mcp__github__list_issues,mcp__github__create_issue_comment"
 ```
 - `WebSearch`: 启用网络搜索功能，可搜索互联网信息
 - `WebFetch`: 启用网页抓取功能，可获取和分析网页内容
 - `Bash(gh search:*)`: 启用 GitHub CLI 搜索功能，可搜索 GitHub 上的仓库、代码、Issue 和 PR
+- `mcp__github__get_issue`: 获取 Issue 详细信息
+- `mcp__github__search_issues`: 搜索 Issue
+- `mcp__github__list_issues`: 列出 Issue
+- `mcp__github__create_issue_comment`: 创建 Issue 评论
 
 **权限配置**：
 ```yaml
@@ -601,6 +605,109 @@ ${{ github.event.workflow_run.conclusion }} # Workflow 结论
 ```yaml
 --allowedTools 'mcp__github_inline_comment__create_inline_comment,Bash(gh pr comment:*),Bash(gh pr diff:*),Bash(gh pr view:*)'
 ```
+
+---
+
+## Qlib 集成说明
+
+### 关于 Qlib
+
+[Qlib](https://github.com/microsoft/qlib) 是微软开源的 AI 驱动量化投资平台，旨在使用 AI 技术赋能量化研究，从探索想法到实现生产。
+
+**最新版本**: v0.9.7 (发布于 2024年8月15日)
+
+**主要特性**：
+- 支持多种 ML 建模范式（监督学习、市场动态建模、强化学习）
+- 集成 [RD-Agent](https://github.com/microsoft/RD-Agent) 自动化研发流程
+- 支持 Parquet 数据格式
+- 完整的量化投资工作流支持
+
+### 如何集成 Qlib 到本仓库
+
+由于 Qlib 是一个完整的独立项目，推荐使用以下方式之一进行集成：
+
+#### 方式 1：Git Submodule（推荐）
+
+```bash
+# 添加 Qlib 为子模块
+git submodule add https://github.com/microsoft/qlib.git qlib
+
+# 初始化并更新子模块
+git submodule update --init --recursive
+
+# 提交子模块配置
+git add .gitmodules qlib
+git commit -m "Add Qlib as submodule"
+git push
+```
+
+**优点**：
+- 保持 Qlib 代码与上游同步
+- 可以轻松更新到最新版本
+- 不会污染本仓库的提交历史
+
+**更新 Qlib**：
+```bash
+cd qlib
+git fetch origin
+git checkout v0.9.7  # 或其他版本标签
+cd ..
+git add qlib
+git commit -m "Update Qlib to v0.9.7"
+git push
+```
+
+#### 方式 2：自动化脚本
+
+使用本仓库提供的 `scripts/setup-qlib.sh` 脚本：
+
+```bash
+# 运行脚本克隆或更新 Qlib
+chmod +x scripts/setup-qlib.sh
+./scripts/setup-qlib.sh
+```
+
+脚本会自动检测 Qlib 是否已存在，如不存在则克隆最新版本。
+
+#### 方式 3：GitHub Actions 自动化
+
+在需要使用 Qlib 的 workflow 中添加自动克隆步骤：
+
+```yaml
+- name: Setup Qlib
+  run: |
+    if [ ! -d "qlib" ]; then
+      git clone --depth 1 --branch v0.9.7 https://github.com/microsoft/qlib.git qlib
+      echo "✅ Qlib v0.9.7 cloned successfully"
+    else
+      echo "✅ Qlib already exists"
+    fi
+```
+
+### Qlib 使用示例
+
+安装 Qlib 依赖：
+```bash
+cd qlib
+pip install -e .
+```
+
+运行 Qlib 示例：
+```bash
+# 获取数据
+python scripts/get_data.py qlib_data --target_dir ~/.qlib/qlib_data/cn_data
+
+# 运行示例策略
+cd examples
+python workflow_by_code.py
+```
+
+### 相关资源
+
+- [Qlib 官方文档](https://qlib.readthedocs.io/)
+- [Qlib GitHub 仓库](https://github.com/microsoft/qlib)
+- [Qlib 快速入门](https://qlib.readthedocs.io/en/latest/start/introduction.html)
+- [Qlib Server](https://github.com/microsoft/qlib-server)
 
 ---
 
