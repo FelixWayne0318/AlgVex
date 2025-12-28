@@ -43,4 +43,4 @@ jobs:
           use_sticky_comment: "true"
           allowed_bots: "dependabot[bot],renovate[bot],claude[bot]"
           claude_args: |
-            --allowedTools "WebSearch,WebFetch"
+            --allowedTools "WebSearch,WebFetch,Bash(gh search:*)"
