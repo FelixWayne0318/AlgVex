@@ -66,10 +66,10 @@ GitHub 事件
 **功能**：响应用户在 Issue 或 PR 中 @claude 的请求，执行代码编写、问题解答等任务。
 
 **触发条件**：
-- Issue 评论包含 `@claude`
-- PR 评论包含 `@claude`
-- PR Review 评论包含 `@claude`
-- 新 Issue 标题或内容包含 `@claude`
+- Issue 评论创建 (`issue_comment: [created]`) 且包含 `@claude`
+- PR 评论创建 (`pull_request_review_comment: [created]`) 且包含 `@claude`
+- PR Review 提交 (`pull_request_review: [submitted]`) 且包含 `@claude`
+- 新 Issue 创建/分配 (`issues: [opened, assigned]`) 且标题或内容包含 `@claude`
 
 **使用示例**：
 ```
@@ -85,6 +85,16 @@ GitHub 事件
 timeout-minutes: 30          # 最长运行 30 分钟
 use_sticky_comment: "true"   # 使用固定评论，避免刷屏
 allowed_bots: "dependabot[bot],renovate[bot]"  # 允许的 bot
+```
+
+**权限配置**：
+```yaml
+permissions:
+  contents: write      # 读写仓库内容
+  pull-requests: write # 管理 PR
+  issues: write        # 管理 Issue
+  id-token: write      # OIDC 认证
+  actions: read        # 读取 Actions
 ```
 
 **分支行为**：
@@ -118,6 +128,22 @@ allowed_bots: "dependabot[bot],renovate[bot]"  # 允许的 bot
 ```yaml
 timeout-minutes: 15          # 最长运行 15 分钟
 track_progress: true         # 显示进度追踪
+use_sticky_comment: "true"   # 使用固定评论
+allowed_bots: "claude[bot]"  # 允许 Claude bot
+```
+
+**权限配置**：
+```yaml
+permissions:
+  contents: read       # 读取仓库内容
+  pull-requests: write # 管理 PR（发布审查评论）
+  id-token: write      # OIDC 认证
+```
+
+**允许工具**：
+```yaml
+claude_args: |
+  --allowedTools "mcp__github_inline_comment__create_inline_comment,Bash(gh pr comment:*),Bash(gh pr diff:*),Bash(gh pr view:*)"
 ```
 
 ---
@@ -140,6 +166,14 @@ track_progress: true         # 显示进度追踪
 ```yaml
 timeout-minutes: 10
 allowed_non_write_users: "*"  # 允许所有用户创建 Issue
+```
+
+**权限配置**：
+```yaml
+permissions:
+  contents: read   # 读取仓库内容
+  issues: write    # 管理 Issue（添加标签、评论）
+  id-token: write  # OIDC 认证
 ```
 
 ---
@@ -166,6 +200,25 @@ allowed_non_write_users: "*"  # 允许所有用户创建 Issue
    - 建议用户关注原始 Issue
 4. 如果不是重复：不做任何操作
 
+**关键配置**：
+```yaml
+timeout-minutes: 10
+```
+
+**权限配置**：
+```yaml
+permissions:
+  contents: read   # 读取仓库内容
+  issues: write    # 管理 Issue（添加标签、评论）
+  id-token: write  # OIDC 认证
+```
+
+**允许工具**：
+```yaml
+claude_args: |
+  --allowedTools "mcp__github__get_issue,mcp__github__search_issues,mcp__github__list_issues,mcp__github__create_issue_comment,mcp__github__update_issue,mcp__github__get_issue_comments"
+```
+
 ---
 
 ### 5. ci.yml - 持续集成
@@ -186,6 +239,12 @@ allowed_non_write_users: "*"  # 允许所有用户创建 Issue
 - 类型检查（TypeScript）
 - 构建验证
 
+**权限配置**：
+```yaml
+permissions:
+  # 使用默认权限（只读）
+```
+
 ---
 
 ### 6. ci-failure-auto-fix.yml - CI 失败自动修复
@@ -193,9 +252,10 @@ allowed_non_write_users: "*"  # 允许所有用户创建 Issue
 **功能**：当 CI 失败时，自动分析错误并尝试修复。
 
 **触发条件**：
-- CI workflow 运行完成且结论为 `failure`
-- 存在关联的 PR
-- 分支名不以 `claude-fix-` 开头（防止循环）
+- CI workflow (`workflow_run: workflows: ["CI"], types: [completed]`)
+- CI 运行结论为 `failure` (`github.event.workflow_run.conclusion == 'failure'`)
+- 存在关联的 PR (`github.event.workflow_run.pull_requests[0]`)
+- 分支名不以 `claude-fix-` 开头（`!startsWith(github.event.workflow_run.head_branch, 'claude-fix-')`，防止循环）
 
 **处理流程**：
 1. 检出失败的分支
@@ -208,7 +268,27 @@ allowed_non_write_users: "*"  # 允许所有用户创建 Issue
 **关键配置**：
 ```yaml
 timeout-minutes: 20
+```
+
+**权限配置**：
+```yaml
+permissions:
+  contents: write      # 读写仓库内容（提交修复）
+  pull-requests: write # 管理 PR
+  actions: read        # 读取 Actions 日志
+  issues: write        # 管理 Issue
+  id-token: write      # OIDC 认证
+```
+
+**允许工具**：
+```yaml
 claude_args: "--allowedTools 'Edit,MultiEdit,Write,Read,Glob,Grep,LS,Bash(git:*),Bash(npm:*),Bash(npx:*),Bash(gh:*)'"
+```
+
+**Git 配置**：
+```yaml
+git config --global user.email "claude[bot]@users.noreply.github.com"
+git config --global user.name "claude[bot]"
 ```
 
 ---
@@ -218,7 +298,8 @@ claude_args: "--allowedTools 'Edit,MultiEdit,Write,Read,Glob,Grep,LS,Bash(git:*)
 **功能**：分析 CI 失败是否为 Flaky 测试（不稳定测试）。
 
 **触发条件**：
-- CI workflow 运行完成且结论为 `failure`
+- CI workflow (`workflow_run: workflows: ["CI"], types: [completed]`)
+- CI 运行结论为 `failure` (`github.event.workflow_run.conclusion == 'failure'`)
 
 **分析标准**：
 - 超时错误
@@ -240,6 +321,25 @@ claude_args: "--allowedTools 'Edit,MultiEdit,Write,Read,Glob,Grep,LS,Bash(git:*)
 - 如果判断为 Flaky 测试且置信度 >= 0.7
 - 自动重新触发 CI workflow
 
+**关键配置**：
+```yaml
+timeout-minutes: 10
+```
+
+**权限配置**：
+```yaml
+permissions:
+  contents: read   # 读取仓库内容
+  actions: write   # 重新触发 workflow
+  id-token: write  # OIDC 认证
+```
+
+**JSON Schema 输出**：
+```yaml
+claude_args: |
+  --json-schema '{"type":"object","properties":{"is_flaky":{"type":"boolean","description":"Whether this appears to be a flaky test failure"},"confidence":{"type":"number","minimum":0,"maximum":1,"description":"Confidence level in the determination"},"summary":{"type":"string","description":"One-sentence explanation of the failure"}},"required":["is_flaky","confidence","summary"]}'
+```
+
 ---
 
 ### 8. manual-code-analysis.yml - 手动代码分析
@@ -257,6 +357,20 @@ claude_args: "--allowedTools 'Edit,MultiEdit,Write,Read,Glob,Grep,LS,Bash(git:*)
 |------|------|
 | `summarize-commit` | 总结最新提交的变更内容 |
 | `security-review` | 安全漏洞审查 |
+
+**关键配置**：
+```yaml
+timeout-minutes: 15
+```
+
+**权限配置**：
+```yaml
+permissions:
+  contents: read       # 读取仓库内容
+  pull-requests: write # 管理 PR（发布分析结果）
+  issues: write        # 管理 Issue（发布分析结果）
+  id-token: write      # OIDC 认证
+```
 
 ---
 
@@ -311,11 +425,56 @@ claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
 
 每个工作流都配置了并发控制，防止同一 PR/Issue 的多个运行相互冲突：
 
+**claude.yml**：
 ```yaml
 concurrency:
-  group: claude-${{ github.event.issue.number || github.event.pull_request.number }}
+  group: claude-${{ github.event.issue.number || github.event.pull_request.number || github.run_id }}
   cancel-in-progress: false
 ```
+
+**pr-review.yml**：
+```yaml
+concurrency:
+  group: pr-review-${{ github.event.pull_request.number }}
+  cancel-in-progress: false
+```
+
+**issue-triage.yml**：
+```yaml
+concurrency:
+  group: issue-triage-${{ github.event.issue.number }}
+  cancel-in-progress: false
+```
+
+**issue-deduplication.yml**：
+```yaml
+concurrency:
+  group: issue-dedup-${{ github.event.issue.number }}
+  cancel-in-progress: false
+```
+
+**ci-failure-auto-fix.yml**：
+```yaml
+concurrency:
+  group: ci-fix-${{ github.event.workflow_run.head_branch }}
+  cancel-in-progress: false
+```
+
+**test-failure-analysis.yml**：
+```yaml
+concurrency:
+  group: test-analysis-${{ github.event.workflow_run.head_branch }}
+  cancel-in-progress: false
+```
+
+**manual-code-analysis.yml**：
+```yaml
+concurrency:
+  group: manual-analysis-${{ github.ref }}
+  cancel-in-progress: false
+```
+
+**说明**：所有工作流都设置了 `cancel-in-progress: false`，意味着新的运行不会取消正在进行的运行，而是等待其完成。
 
 ### 超时设置
 
@@ -351,9 +510,10 @@ concurrency:
 ### 问题：CI 失败自动修复未触发
 
 **检查项**：
-1. CI workflow 名称必须是 `"CI"`
+1. CI workflow 名称必须是 `"CI"`（在 ci.yml 的 `name:` 字段）
 2. 必须有关联的 PR（main 分支直接推送不触发）
 3. 分支名不能以 `claude-fix-` 开头
+4. CI workflow 必须在 main 分支上（workflow_run 事件需要）
 
 ### 问题：重复的评论刷屏
 
@@ -362,8 +522,82 @@ concurrency:
 
 ---
 
+## 最佳实践建议
+
+### 1. 工作流文件管理
+- 所有工作流文件必须位于 `.github/workflows/` 目录
+- 使用有意义的文件名（kebab-case）
+- 为每个工作流添加清晰的 `name:` 字段
+- 工作流文件必须在 main 分支才能被 `workflow_run` 事件触发
+
+### 2. 安全最佳实践
+- 使用 OIDC 认证（`id-token: write`）而非传统 token
+- 最小权限原则：只授予必需的权限
+- 敏感信息使用 GitHub Secrets 存储
+- 限制 `allowed_bots` 和 `allowed_non_write_users`
+
+### 3. 性能优化
+- 设置合理的 `timeout-minutes`
+- 使用 `fetch-depth: 1` 减少克隆时间
+- 配置 `concurrency` 避免资源浪费
+- 使用 `if` 条件避免不必要的运行
+
+### 4. Claude 工具配置
+- 使用 `--allowedTools` 限制工具访问权限
+- 为不同任务配置不同的工具集
+- 使用 `--json-schema` 获取结构化输出
+- 使用 `use_sticky_comment: "true"` 避免评论刷屏
+
+### 5. 调试技巧
+- 在 Actions 页面查看详细日志
+- 使用 `gh run view <run_id> --log-failed` 查看失败日志
+- 在工作流中添加 `echo` 输出调试信息
+- 使用 `workflow_dispatch` 手动触发测试
+
+### 6. 维护建议
+- 定期更新 `anthropics/claude-code-action` 版本
+- 定期审查工作流日志，优化配置
+- 文档与实际配置保持同步
+- 为复杂工作流添加详细注释
+
+---
+
+## 快速参考
+
+### 常用 GitHub 上下文变量
+
+```yaml
+${{ github.repository }}              # 仓库全名 (owner/repo)
+${{ github.event.issue.number }}      # Issue 编号
+${{ github.event.pull_request.number }} # PR 编号
+${{ github.event.comment.body }}      # 评论内容
+${{ github.ref_name }}                # 分支名
+${{ github.run_id }}                  # 运行 ID
+${{ github.event.workflow_run.conclusion }} # Workflow 结论
+```
+
+### 常用 Claude 工具组合
+
+**代码修改类任务**：
+```yaml
+--allowedTools 'Edit,MultiEdit,Write,Read,Glob,Grep,LS,Bash(git:*)'
+```
+
+**GitHub 交互类任务**：
+```yaml
+--allowedTools 'mcp__github__get_issue,mcp__github__search_issues,mcp__github__create_issue_comment,mcp__github__update_issue'
+```
+
+**PR 审查类任务**：
+```yaml
+--allowedTools 'mcp__github_inline_comment__create_inline_comment,Bash(gh pr comment:*),Bash(gh pr diff:*),Bash(gh pr view:*)'
+```
+
+---
+
 ## 相关链接
 
 - [Claude Code Action 官方文档](https://github.com/anthropics/claude-code-action)
 - [GitHub Actions 文档](https://docs.github.com/actions)
 - [AlgVex 工作流使用指南](./WORKFLOW.md)
+- [GitHub Actions 表达式语法](https://docs.github.com/en/actions/learn-github-actions/expressions)
