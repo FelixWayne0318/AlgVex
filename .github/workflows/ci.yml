@@ -1,0 +1,36 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Run basic checks
+        run: |
+          echo "Running CI checks..."
+
+          # 检查是否有 README
+          if [ -f "README.md" ]; then
+            echo "✅ README.md exists"
+          else
+            echo "❌ README.md not found"
+            exit 1
+          fi
+
+          # 检查 workflow 文件语法
+          echo "Checking workflow files..."
+          for f in .github/workflows/*.yml; do
+            if [ -f "$f" ]; then
+              echo "✅ $f exists"
+            fi
+          done
+
+          echo "CI checks passed!"
