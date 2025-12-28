@@ -56,10 +56,10 @@ jobs:
 
           echo "run_id=$run_id" >> "$GITHUB_OUTPUT"
 
-      - name: Checkout main branch (read-only)
+      - name: Checkout default branch (read-only)
         uses: actions/checkout@v4
         with:
-          ref: main
+          ref: ${{ github.event.repository.default_branch }}
           fetch-depth: 0
 
       - name: Build CI context
@@ -80,9 +80,10 @@ jobs:
           echo "" >> "$summary_md"
 
           run_id="$RUN_ID"
+          default_branch="${{ github.event.repository.default_branch }}"
           if [[ -z "$run_id" ]]; then
-            # fallback：取 main 分支最新一次 workflow run
-            runs_json="$(gh api "repos/$REPO/actions/runs?branch=main&per_page=1")"
+            # fallback：取默认分支最新一次 workflow run
+            runs_json="$(gh api "repos/$REPO/actions/runs?branch=$default_branch&per_page=1")"
             run_id="$(echo "$runs_json" | jq -r '.workflow_runs[0].id // empty')"
           fi
 
@@ -96,7 +97,16 @@ jobs:
             exit 0
           fi
 
-          run_json="$(gh api "repos/$REPO/actions/runs/$run_id")"
+          if ! run_json="$(gh api "repos/$REPO/actions/runs/$run_id" 2>&1)"; then
+            echo "::warning::无法获取 Actions run #$run_id 信息: $run_json"
+            echo "- Unable to fetch Actions run details." >> "$summary_md"
+            {
+              echo "ci_md<<EOF"
+              cat "$summary_md"
+              echo "EOF"
+            } >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
           run_url="$(echo "$run_json" | jq -r '.html_url')"
           run_status="$(echo "$run_json" | jq -r '.status')"
           run_conclusion="$(echo "$run_json" | jq -r '.conclusion')"
@@ -109,18 +119,23 @@ jobs:
           echo "- Created: $run_created" >> "$summary_md"
           echo "" >> "$summary_md"
 
-          jobs_json="$(gh api "repos/$REPO/actions/runs/$run_id/jobs?per_page=100")"
           echo "### Failed jobs/steps summary" >> "$summary_md"
           echo "" >> "$summary_md"
-          echo "$jobs_json" | jq -r '
-            .jobs[]
-            | select(.conclusion != "success")
-            | "- Job: \(.name) (conclusion=\(.conclusion))\n"
-              + ( .steps[]
-                  | select(.conclusion != "success" and .conclusion != null)
-                  | "  - Step: \(.name) (conclusion=\(.conclusion))"
-                )
-          ' >> "$summary_md" || true
+
+          if ! jobs_json="$(gh api "repos/$REPO/actions/runs/$run_id/jobs?per_page=100" 2>&1)"; then
+            echo "::warning::无法获取 Jobs 信息: $jobs_json"
+            echo "- Unable to fetch jobs details." >> "$summary_md"
+          else
+            echo "$jobs_json" | jq -r '
+              .jobs[]
+              | select(.conclusion != "success")
+              | "- Job: \(.name) (conclusion=\(.conclusion))\n"
+                + ( .steps[]
+                    | select(.conclusion != "success" and .conclusion != null)
+                    | "  - Step: \(.name) (conclusion=\(.conclusion))"
+                  )
+            ' >> "$summary_md" || true
+          fi
           echo "" >> "$summary_md"
 
           echo "### Key log snippets (truncated)" >> "$summary_md"
@@ -161,31 +176,32 @@ jobs:
           set -euo pipefail
           user_instruction="$(cat /tmp/comment_body.txt)"
 
-          cat > /tmp/claude_issue_prompt.md <<PROMPT_EOF
-You are Claude Code running inside GitHub Actions for a NORMAL ISSUE (not a PR).
-
-HARD RULES (ENFORCED BY PERMISSIONS):
-- This workflow has contents:read. You cannot and must not modify code, create branches, commit, push, or open PRs.
-- Your job is analysis only: root-cause, recommendations, step-by-step fixes for a human to apply.
-
-ISSUE:
-- Issue #: $ISSUE_NUMBER
-- URL: $ISSUE_URL
-
-USER INSTRUCTION (from comment):
----
-$user_instruction
----
-
-CI CONTEXT (if available):
----
-$CI_MD
----
-
-OUTPUT REQUIREMENTS:
-- Provide: (1) what is failing, (2) why it fails, (3) exact fix steps, (4) how to verify.
-- If you need more info, ask precise questions (what file, what command output).
-PROMPT_EOF
+          # 使用 echo 避免 heredoc 缩进问题
+          {
+            echo "You are Claude Code running inside GitHub Actions for a NORMAL ISSUE (not a PR)."
+            echo ""
+            echo "HARD RULES (ENFORCED BY PERMISSIONS):"
+            echo "- This workflow has contents:read. You cannot and must not modify code, create branches, commit, push, or open PRs."
+            echo "- Your job is analysis only: root-cause, recommendations, step-by-step fixes for a human to apply."
+            echo ""
+            echo "ISSUE:"
+            echo "- Issue #: $ISSUE_NUMBER"
+            echo "- URL: $ISSUE_URL"
+            echo ""
+            echo "USER INSTRUCTION (from comment):"
+            echo "---"
+            echo "$user_instruction"
+            echo "---"
+            echo ""
+            echo "CI CONTEXT (if available):"
+            echo "---"
+            echo "$CI_MD"
+            echo "---"
+            echo ""
+            echo "OUTPUT REQUIREMENTS:"
+            echo "- Provide: (1) what is failing, (2) why it fails, (3) exact fix steps, (4) how to verify."
+            echo "- If you need more info, ask precise questions (what file, what command output)."
+          } > /tmp/claude_issue_prompt.md
 
           {
             echo "prompt<<EOF"
@@ -205,7 +221,7 @@ PROMPT_EOF
           claude_args: "--max-turns 12"
 
       - name: Notify Slack
-        if: always()
+        if: ${{ always() && secrets.SLACK_WEBHOOK_URL != '' }}
         uses: slackapi/slack-github-action@v2.0.0
         with:
           webhook: ${{ secrets.SLACK_WEBHOOK_URL }}
