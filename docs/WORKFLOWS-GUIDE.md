@@ -422,10 +422,13 @@ timeout-minutes: 10
 **模型配置**：
 ```yaml
 claude_args: |
-  --max-turns 5  # 简单判断任务，5 轮足够
   --model claude-opus-4-5-20251101
+  --max-turns 10
+  --allowedTools "Bash(gh run:*),Bash(gh api:*)"
   --json-schema '{"type":"object","properties":{"is_flaky":{"type":"boolean"},"confidence":{"type":"number","minimum":0,"maximum":1},"summary":{"type":"string"}},"required":["is_flaky","confidence","summary"]}'
 ```
+
+> ⚠️ **重要**：必须配置 `allowedTools` 允许 `gh run` 命令，否则 Claude 无法获取 CI 日志。
 
 **权限配置**：
 ```yaml
@@ -600,13 +603,24 @@ concurrency:
 
 | 工作流 | max-turns | 说明 |
 |--------|-----------|------|
-| test-failure-analysis.yml | 5 | 简单判断任务，5 轮足够 |
+| test-failure-analysis.yml | 10 | 需要获取日志并分析 |
 | ci-failure-auto-fix.yml | 15 | 复杂修复任务，需要更多轮次 |
 
 **说明**：
 - 每次工具调用消耗一个 turn
 - 设置 max-turns 可以防止无限循环和成本失控
 - 这是 [官方推荐的最佳实践](https://github.com/anthropics/claude-code-action/blob/main/docs/custom-automations.md)
+
+### allowedTools 配置
+
+为确保 Claude 能够执行必要的命令，需要配置 `--allowedTools` 参数：
+
+| 工作流 | allowedTools | 说明 |
+|--------|--------------|------|
+| test-failure-analysis.yml | `Bash(gh run:*),Bash(gh api:*)` | 需要获取 CI 日志 |
+| ci-failure-auto-fix.yml | 完整工具集 | 需要编辑代码和执行命令 |
+
+**重要**：如果 prompt 中要求 Claude 执行某个命令，必须在 `allowedTools` 中授权，否则会被拒绝。
 
 ---
 

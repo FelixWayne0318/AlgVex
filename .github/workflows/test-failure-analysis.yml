@@ -53,7 +53,8 @@ jobs:
             - summary: brief one-sentence explanation
           claude_args: |
             --model claude-opus-4-5-20251101
-            --max-turns 5
+            --max-turns 10
+            --allowedTools "Bash(gh run:*),Bash(gh api:*)"
             --json-schema '{"type":"object","properties":{"is_flaky":{"type":"boolean","description":"Whether this appears to be a flaky test failure"},"confidence":{"type":"number","minimum":0,"maximum":1,"description":"Confidence level in the determination"},"summary":{"type":"string","description":"One-sentence explanation of the failure"}},"required":["is_flaky","confidence","summary"]}'
 
       - name: Validate detection output
