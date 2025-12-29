@@ -124,16 +124,19 @@ jobs:
       - name: Validate failure details
         if: steps.check_fix.outputs.should_fix == 'true'
         id: validate_details
+        env:
+          FAILURE_OUTCOME: ${{ steps.failure_details.outcome }}
+          FAILURE_RESULT: ${{ steps.failure_details.outputs.result }}
         run: |
-          if [ "${{ steps.failure_details.outcome }}" != "success" ] || [ -z '${{ steps.failure_details.outputs.result }}' ]; then
+          if [ "$FAILURE_OUTCOME" != "success" ] || [ -z "$FAILURE_RESULT" ]; then
             echo "valid=false" >> $GITHUB_OUTPUT
             echo "::warning::Failed to get CI failure details"
           else
-            # Validate JSON format
-            if echo '${{ steps.failure_details.outputs.result }}' | jq -e . >/dev/null 2>&1; then
+            # Validate JSON format (use env var to avoid shell quoting issues)
+            if echo "$FAILURE_RESULT" | jq -e . >/dev/null 2>&1; then
               echo "valid=true" >> $GITHUB_OUTPUT
-              echo "run_url=$(echo '${{ steps.failure_details.outputs.result }}' | jq -r '.runUrl')" >> $GITHUB_OUTPUT
-              echo "failed_jobs=$(echo '${{ steps.failure_details.outputs.result }}' | jq -r '.failedJobs | join(", ")')" >> $GITHUB_OUTPUT
+              echo "run_url=$(echo "$FAILURE_RESULT" | jq -r '.runUrl')" >> $GITHUB_OUTPUT
+              echo "failed_jobs=$(echo "$FAILURE_RESULT" | jq -r '.failedJobs | join(", ")')" >> $GITHUB_OUTPUT
             else
               echo "valid=false" >> $GITHUB_OUTPUT
               echo "::warning::Invalid JSON in failure details"
@@ -172,8 +175,18 @@ jobs:
         if: steps.check_fix.outputs.should_fix == 'true'
         id: check_changes
         run: |
+          # 确保远程分支信息是最新的
+          git fetch origin "${{ github.event.workflow_run.head_branch }}" 2>/dev/null || true
+
+          # 检查远程分支是否存在
+          if ! git rev-parse --verify "origin/${{ github.event.workflow_run.head_branch }}" >/dev/null 2>&1; then
+            echo "has_changes=true" >> $GITHUB_OUTPUT
+            echo "⚠️ 远程分支不存在，假设有更改"
+            exit 0
+          fi
+
           # 检查是否有未提交的更改或新提交
-          if git diff --quiet HEAD origin/${{ github.event.workflow_run.head_branch }} 2>/dev/null; then
+          if git diff --quiet HEAD "origin/${{ github.event.workflow_run.head_branch }}"; then
             echo "has_changes=false" >> $GITHUB_OUTPUT
             echo "⚠️ 没有检测到代码更改"
           else

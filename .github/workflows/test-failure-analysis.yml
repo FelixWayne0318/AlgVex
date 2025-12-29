@@ -62,14 +62,17 @@ jobs:
 
       - name: Validate detection output
         id: validate
+        env:
+          DETECT_OUTCOME: ${{ steps.detect.outcome }}
+          STRUCTURED_OUTPUT: ${{ steps.detect.outputs.structured_output }}
         run: |
-          if [ "${{ steps.detect.outcome }}" != "success" ] || [ -z '${{ steps.detect.outputs.structured_output }}' ]; then
+          if [ "$DETECT_OUTCOME" != "success" ] || [ -z "$STRUCTURED_OUTPUT" ]; then
             echo "valid=false" >> $GITHUB_OUTPUT
             echo "::warning::Detection step failed or returned empty output"
             exit 0
           fi
 
-          OUTPUT='${{ steps.detect.outputs.structured_output }}'
+          OUTPUT="$STRUCTURED_OUTPUT"
 
           # Validate JSON format
           if ! echo "$OUTPUT" | jq -e . >/dev/null 2>&1; then
@@ -100,7 +103,7 @@ jobs:
         if: |
           steps.validate.outputs.valid == 'true' &&
           steps.validate.outputs.is_flaky == 'true' &&
-          steps.validate.outputs.confidence >= 0.7
+          fromJSON(steps.validate.outputs.confidence) >= 0.7
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
