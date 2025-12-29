@@ -93,7 +93,7 @@ if [ -d "$HUMMINGBOT_DIR" ]; then
             echo "Pulling latest changes..."
             if git pull origin "$VERSION" 2>&1 | grep -q "Already up to date"; then
                 echo -e "${GREEN}Already up to date${NC}"
-            elif [ ${PIPESTATUS[0]} -eq 0 ]; then
+            elif [ "${PIPESTATUS[0]}" -eq 0 ]; then
                 echo -e "${GREEN}Updated successfully${NC}"
             else
                 echo -e "${RED}❌ Failed to pull changes${NC}"
