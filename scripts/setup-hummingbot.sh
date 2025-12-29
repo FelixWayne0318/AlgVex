@@ -13,7 +13,7 @@
 #             If not provided, uses the default stable version
 #
 # Examples:
-#   ./scripts/setup-hummingbot.sh           # Clone/update to default version (v2.9.0)
+#   ./scripts/setup-hummingbot.sh           # Clone/update to default version (v2.11.0)
 #   ./scripts/setup-hummingbot.sh v2.8.0    # Clone/update to v2.8.0
 #   INTERACTIVE=false ./scripts/setup-hummingbot.sh v2.9.0  # Non-interactive mode
 #
@@ -23,7 +23,7 @@ set -euo pipefail  # Exit on error, undefined vars, and pipe failures
 # Configuration
 HUMMINGBOT_REPO="https://github.com/hummingbot/hummingbot.git"
 HUMMINGBOT_DIR="hummingbot"
-DEFAULT_VERSION="v2.9.0"
+DEFAULT_VERSION="v2.11.0"
 
 # Colors for output
 GREEN='\033[0;32m'
