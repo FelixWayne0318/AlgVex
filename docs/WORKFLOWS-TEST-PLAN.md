@@ -2,6 +2,16 @@
 
 本文档提供 AlgVex 仓库中所有 GitHub Actions 工作流的完整测试方案，包括测试用例、执行步骤和 PR 引导说明。
 
+> ⚠️ **重要权限说明**
+>
+> 当 Claude Code Action 在 **Issue 中触发**时，无法使用 `git checkout -b` 或 `git push origin new-branch` 创建分支。
+>
+> **解决方案**：
+> - **方式 1（推荐）**: 在 Issue 评论中告诉 Claude 要创建的分支和文件，Claude 会使用 GitHub API 自动完成
+> - **方式 2**: 使用 `gh api` 命令手动调用 GitHub API 创建文件（会自动创建分支）
+>
+> 本文档中所有需要创建分支的测试步骤都提供了这两种方式。
+
 ## 目录
 
 - [一、文档与代码一致性检查](#一文档与代码一致性检查)
@@ -121,18 +131,35 @@ gh pr comment <PR_NUMBER> --body "@claude 请解释这个 PR 的主要变更"
 | 6 | 验证 timeout | 运行时间 < 15 分钟 | 查看 Actions 耗时 |
 
 **测试命令**：
-```bash
-# 创建测试分支和 PR
-git checkout -b test/pr-review-test
-echo "# Test" >> test-file.md
-git add test-file.md
-git commit -m "test: 测试 PR 审查"
-git push origin test/pr-review-test
-gh pr create --title "测试 PR 审查" --body "这是一个测试 PR"
 
-# 测试跳过审查
-gh pr create --title "[skip review] 测试跳过" --body "不应触发审查"
-gh pr create --title "[wip] 工作进行中" --body "不应触发审查"
+> ⚠️ **权限说明**: 在 Issue 中触发 Claude 时，无法使用 `git checkout -b` 创建分支。请使用以下两种方式之一：
+
+**方式 1: 让 Claude 执行（推荐）**
+
+在 Issue 评论中写：
+```
+@claude 请创建测试分支 test/pr-review-test，添加文件 test-file.md（内容为 "# Test"），然后创建标题为"测试 PR 审查"的 PR
+```
+
+**方式 2: 使用 GitHub API（手动执行）**
+
+```bash
+# 使用 GitHub API 创建文件（会自动创建分支）
+gh api repos/{owner}/{repo}/contents/test-file.md \
+  -X PUT \
+  -f message="test: 测试 PR 审查" \
+  -f branch="test/pr-review-test" \
+  -f content="$(echo '# Test' | base64)"
+
+# 创建 PR
+gh pr create --head test/pr-review-test --title "测试 PR 审查" --body "这是一个测试 PR"
+```
+
+**测试跳过审查**：
+```bash
+# 创建跳过审查的 PR（需要先用上述方式创建分支）
+gh pr create --head test/skip-review --title "[skip review] 测试跳过" --body "不应触发审查"
+gh pr create --head test/wip --title "[wip] 工作进行中" --body "不应触发审查"
 ```
 
 ---
@@ -197,14 +224,28 @@ gh issue create --title "如何使用 Qlib？" --body "请问 Qlib 模块怎么�
 | 6 | 故意引入 YAML 错误 | CI 失败 | CI 状态为红色 |
 
 **测试命令**：
+
+> ⚠️ **权限说明**: 在 Issue 中触发 Claude 时，无法使用 `git checkout -b` 创建分支。请使用以下方式：
+
+**方式 1: 让 Claude 执行（推荐）**
+
+在 Issue 评论中写：
+```
+@claude 请创建分支 test/ci-failure，添加一个故意有语法错误的 shell 脚本 scripts/test-error.sh（内容为 echo $undefined_var），然后创建 PR 测试 CI 失败
+```
+
+**方式 2: 使用 GitHub API（手动执行）**
+
 ```bash
-# 创建测试分支引入错误
-git checkout -b test/ci-failure
-# 编辑一个 YAML 文件引入语法错误
-git add .
-git commit -m "test: 测试 CI 失败检测"
-git push origin test/ci-failure
-gh pr create --title "测试 CI 失败" --body "故意引入错误测试 CI"
+# 创建带有 ShellCheck 错误的脚本文件
+gh api repos/{owner}/{repo}/contents/scripts/test-error.sh \
+  -X PUT \
+  -f message="test: 测试 CI 失败检测" \
+  -f branch="test/ci-failure" \
+  -f content="$(echo 'echo $undefined_var' | base64)"
+
+# 创建 PR
+gh pr create --head test/ci-failure --title "测试 CI 失败" --body "故意引入错误测试 CI"
 ```
 
 ---
@@ -301,10 +342,26 @@ ci-failure-auto-fix.yml (自动修复)
 | 4 | 验证修复分支 | 创建 `claude-fix-*` 分支 | 分支列表有新分支 |
 
 **测试命令**：
+
+> ⚠️ **权限说明**: 在 Issue 中触发 Claude 时，无法使用 `git checkout -b` 创建分支。请使用以下方式：
+
+**方式 1: 让 Claude 执行（推荐）**
+
+在 Issue 评论中写：
+```
+@claude 请创建分支 test/ci-chain-test，添加一个 YAML 文件 test-error.yml（内容故意包含语法错误），然后创建标题为"测试 CI 链式处理"的 PR
+```
+
+**方式 2: 使用 GitHub API（手动执行）**
+
 ```bash
-# 创建带有 YAML 语法错误的分支
-git checkout -b test/ci-chain-test
-cat > test-error.yml << 'EOF'
+# 创建带有 YAML 语法错误的文件（注意：不要放在 .github/workflows/ 目录，避免影响仓库）
+# 这里创建一个普通 YAML 文件测试 yamllint
+gh api repos/{owner}/{repo}/contents/test-error.yml \
+  -X PUT \
+  -f message="test: 测试 CI 链式处理" \
+  -f branch="test/ci-chain-test" \
+  -f content="$(cat << 'EOF' | base64
 # 故意的语法错误
 name: Test
 on: [push]
@@ -313,13 +370,15 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Test
-      run: echo "missing dash"  # 错误：缺少 -
+      run: echo "missing dash"
 EOF
-git add test-error.yml
-git commit -m "test: 测试 CI 链式处理"
-git push origin test/ci-chain-test
-gh pr create --title "测试 CI 链式处理" --body "测试 CI 失败 → 分析 → 自动修复链"
+)"
+
+# 创建 PR
+gh pr create --head test/ci-chain-test --title "测试 CI 链式处理" --body "测试 CI 失败 → 分析 → 自动修复链"
 ```
+
+> ⚠️ **注意**: 测试文件不应放在 `.github/workflows/` 目录，避免被意外合并。建议放在项目根目录或 `tests/` 目录。
 
 ---
 
@@ -352,13 +411,28 @@ gh pr create --title "测试 CI 链式处理" --body "测试 CI 失败 → 分�
 ```
 
 #### 步骤 1.3: 创建测试 PR 验证 PR 审查
+
+> ⚠️ **权限说明**: 在 Issue 中触发 Claude 时，无法使用 `git checkout -b` 创建分支。
+
+**方式 1: 让 Claude 执行（推荐）**
+
+在 Issue 评论中写：
+```
+@claude 请创建测试分支 test/pr-review-basic，添加文件 test-pr-review.md（内容为 "# 测试文件"），然后创建标题为"测试 PR 审查"的 PR
+```
+
+**方式 2: 使用 GitHub API（手动执行）**
+
 ```bash
-git checkout -b test/pr-review-basic
-echo "# 测试文件" > test-pr-review.md
-git add test-pr-review.md
-git commit -m "test: 测试 PR 审查功能"
-git push origin test/pr-review-basic
-gh pr create --title "测试 PR 审查" --body "验证 pr-review.yml 功能"
+# 使用 GitHub API 创建文件（会自动创建分支）
+gh api repos/{owner}/{repo}/contents/test-pr-review.md \
+  -X PUT \
+  -f message="test: 测试 PR 审查功能" \
+  -f branch="test/pr-review-basic" \
+  -f content="$(echo '# 测试文件' | base64)"
+
+# 创建 PR
+gh pr create --head test/pr-review-basic --title "测试 PR 审查" --body "验证 pr-review.yml 功能"
 ```
 
 ### 阶段 2: Issue 链测试
@@ -384,23 +458,31 @@ gh issue create --title "Feature: 支持 Python 3.12" --body "希望添加 Pytho
 ### 阶段 3: CI 链测试
 
 #### 步骤 3.1: 触发 CI 失败
+
+> ⚠️ **权限说明**: 在 Issue 中触发 Claude 时，无法使用 `git checkout -b` 创建分支。
+>
+> ⚠️ **重要提醒**: 不要在 `.github/workflows/` 目录创建测试文件，以免影响仓库。建议使用 shell 脚本触发 ShellCheck 失败。
+
+**方式 1: 让 Claude 执行（推荐）**
+
+在 Issue 评论中写：
+```
+@claude 请创建分支 test/ci-failure-chain，添加一个有 ShellCheck 警告的脚本 scripts/test-ci-error.sh（内容为 echo $undefined_var），然后创建标题为"测试 CI 失败链"的 PR
+```
+
+**方式 2: 使用 GitHub API（手动执行）**
+
 ```bash
-git checkout -b test/ci-failure-chain
-# 创建一个会导致 CI 失败的文件（如 YAML 语法错误）
-cat > .github/workflows/test-error.yml << 'EOF'
-name: Test Error
-on: push
-jobs:
-  test:
-    runs-on: ubuntu-latest
-    steps:
-      - name: Test
-      run: echo "error"  # 缺少 -
-EOF
-git add .github/workflows/test-error.yml
-git commit -m "test: 触发 CI 失败"
-git push origin test/ci-failure-chain
-gh pr create --title "测试 CI 失败链" --body "测试 CI → 分析 → 修复"
+# 创建带有 ShellCheck 错误的脚本（会触发 CI 失败）
+gh api repos/{owner}/{repo}/contents/scripts/test-ci-error.sh \
+  -X PUT \
+  -f message="test: 触发 CI 失败" \
+  -f branch="test/ci-failure-chain" \
+  -f content="$(echo '#!/bin/bash
+echo $undefined_var' | base64)"
+
+# 创建 PR
+gh pr create --head test/ci-failure-chain --title "测试 CI 失败链" --body "测试 CI → 分析 → 修复"
 ```
 
 #### 步骤 3.2: 观察链式处理
@@ -415,9 +497,36 @@ gh pr create --title "测试 CI 失败链" --body "测试 CI → 分析 → 修�
 ### 阶段 4: 边界测试
 
 #### 步骤 4.1: 测试跳过审查
+
+> ⚠️ **权限说明**: 创建 PR 需要先有分支，在 Issue 中触发 Claude 时需使用 GitHub API。
+
+**方式 1: 让 Claude 执行（推荐）**
+
+在 Issue 评论中写：
+```
+@claude 请分别创建两个测试 PR：
+1. 分支 test/skip-review，添加文件 skip-test.md，PR 标题为 "[skip review] 测试跳过审查"
+2. 分支 test/wip-review，添加文件 wip-test.md，PR 标题为 "[wip] 工作进行中"
+```
+
+**方式 2: 使用 GitHub API（手动执行）**
+
 ```bash
-gh pr create --title "[skip review] 测试跳过审查" --body "验证跳过逻辑"
-gh pr create --title "[wip] 工作进行中" --body "验证 WIP 跳过"
+# 创建跳过审查测试分支
+gh api repos/{owner}/{repo}/contents/skip-test.md \
+  -X PUT \
+  -f message="test: 跳过审查测试" \
+  -f branch="test/skip-review" \
+  -f content="$(echo '# Skip review test' | base64)"
+gh pr create --head test/skip-review --title "[skip review] 测试跳过审查" --body "验证跳过逻辑"
+
+# 创建 WIP 测试分支
+gh api repos/{owner}/{repo}/contents/wip-test.md \
+  -X PUT \
+  -f message="test: WIP 测试" \
+  -f branch="test/wip-review" \
+  -f content="$(echo '# WIP test' | base64)"
+gh pr create --head test/wip-review --title "[wip] 工作进行中" --body "验证 WIP 跳过"
 ```
 
 #### 步骤 4.2: 测试空输入
