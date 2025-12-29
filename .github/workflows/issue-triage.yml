@@ -1,29 +1,84 @@
 name: Issue Triage
 
 on:
-  issues:
-    types: [opened]
+  workflow_run:
+    workflows: ["Issue Deduplication"]  # 依赖 Deduplication 工作流
+    types:
+      - completed
 
 concurrency:
-  group: issue-triage-${{ github.event.issue.number }}
+  group: issue-triage-${{ github.event.workflow_run.id }}
   cancel-in-progress: false
 
 jobs:
   triage:
+    # 只有当 Deduplication 工作流成功完成且 Issue 不是重复时才执行
+    if: github.event.workflow_run.conclusion == 'success'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
       contents: read
       issues: write
       id-token: write
+      actions: read
 
     steps:
+      - name: Check if triage is needed
+        id: check_triage
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          # 获取触发此工作流的 Issue Deduplication 运行 ID
+          RUN_ID="${{ github.event.workflow_run.id }}"
+
+          # 下载日志并检查 is_duplicate
+          LOGS=$(gh run view "$RUN_ID" --log 2>/dev/null || echo "")
+
+          if echo "$LOGS" | grep -q "is_duplicate=true"; then
+            echo "should_triage=false" >> $GITHUB_OUTPUT
+            echo "⚠️ Issue 是重复的，跳过分类"
+          else
+            echo "should_triage=true" >> $GITHUB_OUTPUT
+            echo "✅ Issue 不是重复，继续分类"
+
+            # 从日志中获取 issue number
+            ISSUE_NUMBER=$(echo "$LOGS" | grep -oP 'issue_number=\K\d+' | head -1 || echo "")
+            if [ -n "$ISSUE_NUMBER" ]; then
+              echo "issue_number=$ISSUE_NUMBER" >> $GITHUB_OUTPUT
+            fi
+          fi
+
+      - name: Get Issue number from workflow run
+        if: steps.check_triage.outputs.should_triage == 'true'
+        id: get_issue
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          # 尝试从 check_triage 步骤获取 issue number
+          ISSUE_NUMBER="${{ steps.check_triage.outputs.issue_number }}"
+
+          # 如果没有获取到，尝试从工作流运行的关联 issues 获取
+          if [ -z "$ISSUE_NUMBER" ]; then
+            # 获取最近创建的 issue（因为 deduplication 刚处理完）
+            ISSUE_NUMBER=$(gh issue list --state open --limit 1 --json number --jq '.[0].number' 2>/dev/null || echo "")
+          fi
+
+          if [ -n "$ISSUE_NUMBER" ]; then
+            echo "issue_number=$ISSUE_NUMBER" >> $GITHUB_OUTPUT
+            echo "✅ 找到 Issue: #$ISSUE_NUMBER"
+          else
+            echo "issue_number=" >> $GITHUB_OUTPUT
+            echo "⚠️ 未找到 Issue number"
+          fi
+
       - name: Checkout repository
+        if: steps.check_triage.outputs.should_triage == 'true' && steps.get_issue.outputs.issue_number != ''
         uses: actions/checkout@v5
         with:
           fetch-depth: 1
 
       - name: Run Claude Code for Issue Triage
+        if: steps.check_triage.outputs.should_triage == 'true' && steps.get_issue.outputs.issue_number != ''
         uses: anthropics/claude-code-action@v1
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
@@ -31,15 +86,18 @@ jobs:
           prompt: |
             Analyze this new issue and apply appropriate labels.
 
-            Issue: #${{ github.event.issue.number }}
+            Issue: #${{ steps.get_issue.outputs.issue_number }}
             Repository: ${{ github.repository }}
 
             Your task:
-            1. Read the issue title and body
+            1. Read the issue title and body using mcp__github__get_issue
             2. Determine the appropriate labels based on:
                - Type: bug, feature, question, documentation
                - Priority: low, medium, high, critical
                - Area: which component or area of the codebase
 
-            Apply the labels using the GitHub API.
-            If the issue is unclear, add a comment asking for clarification.
+            Apply the labels using mcp__github__update_issue.
+            If the issue is unclear, add a comment asking for clarification using mcp__github__create_issue_comment.
+          claude_args: |
+            --model claude-opus-4-5-20251101
+            --allowedTools "mcp__github__get_issue,mcp__github__update_issue,mcp__github__create_issue_comment"

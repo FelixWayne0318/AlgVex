@@ -19,6 +19,12 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     if: ${{ github.event.workflow_run.conclusion == 'failure' }}
+
+    # 添加 outputs 供 ci-failure-auto-fix 工作流使用
+    outputs:
+      is_flaky: ${{ steps.validate.outputs.is_flaky }}
+      should_auto_fix: ${{ steps.set_result.outputs.should_auto_fix }}
+
     steps:
       - name: Checkout repository
         uses: actions/checkout@v5
@@ -46,6 +52,7 @@ jobs:
             - confidence: number 0-1 indicating confidence level
             - summary: brief one-sentence explanation
           claude_args: |
+            --model claude-opus-4-5-20251101
             --json-schema '{"type":"object","properties":{"is_flaky":{"type":"boolean","description":"Whether this appears to be a flaky test failure"},"confidence":{"type":"number","minimum":0,"maximum":1,"description":"Confidence level in the determination"},"summary":{"type":"string","description":"One-sentence explanation of the failure"}},"required":["is_flaky","confidence","summary"]}'
 
       - name: Validate detection output
@@ -127,4 +134,19 @@ jobs:
           $ACTION
 
           [View workflow run](${{ github.event.workflow_run.html_url }})"
+          fi
+
+      - name: Set analysis result
+        id: set_result
+        if: steps.validate.outputs.valid == 'true'
+        run: |
+          IS_FLAKY="${{ steps.validate.outputs.is_flaky }}"
+
+          # 只有当不是 flaky test 时才应该自动修复
+          if [ "$IS_FLAKY" == "false" ]; then
+            echo "should_auto_fix=true" >> $GITHUB_OUTPUT
+            echo "✅ 不是 flaky test，建议自动修复"
+          else
+            echo "should_auto_fix=false" >> $GITHUB_OUTPUT
+            echo "⚠️ 检测到 flaky test，已触发重试，不需要自动修复"
           fi
