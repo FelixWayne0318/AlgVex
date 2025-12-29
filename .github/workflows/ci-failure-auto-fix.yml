@@ -2,7 +2,7 @@ name: Auto Fix CI Failures
 
 on:
   workflow_run:
-    workflows: ["CI"]
+    workflows: ["Test Failure Analysis"]  # 依赖 Analysis 工作流，而非直接依赖 CI
     types:
       - completed
 
@@ -19,14 +19,46 @@ permissions:
 
 jobs:
   auto-fix:
+    # 只有当 Analysis 工作流成功完成且判断需要自动修复时才执行
     if: |
-      github.event.workflow_run.conclusion == 'failure' &&
-      github.event.workflow_run.pull_requests[0] &&
+      github.event.workflow_run.conclusion == 'success' &&
       !startsWith(github.event.workflow_run.head_branch, 'claude-fix-')
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
+      - name: Check if auto-fix is needed
+        id: check_fix
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          # 获取触发此工作流的 Test Failure Analysis 运行 ID
+          ANALYSIS_RUN_ID="${{ github.event.workflow_run.id }}"
+          BRANCH="${{ github.event.workflow_run.head_branch }}"
+
+          # 下载日志并检查 should_auto_fix
+          LOGS=$(gh run view "$ANALYSIS_RUN_ID" --log 2>/dev/null || echo "")
+
+          if echo "$LOGS" | grep -q "should_auto_fix=true"; then
+            echo "should_fix=true" >> $GITHUB_OUTPUT
+            echo "✅ 检测到需要自动修复"
+
+            # 获取最近失败的 CI 运行 ID（在同一分支上）
+            CI_RUN_ID=$(gh run list --workflow=ci.yml --branch="$BRANCH" --status=failure --limit=1 --json databaseId --jq '.[0].databaseId' 2>/dev/null || echo "")
+
+            if [ -n "$CI_RUN_ID" ]; then
+              echo "ci_run_id=$CI_RUN_ID" >> $GITHUB_OUTPUT
+              echo "✅ 找到失败的 CI 运行: $CI_RUN_ID"
+            else
+              echo "ci_run_id=" >> $GITHUB_OUTPUT
+              echo "⚠️ 未找到失败的 CI 运行"
+            fi
+          else
+            echo "should_fix=false" >> $GITHUB_OUTPUT
+            echo "⚠️ 不需要自动修复（可能是 flaky test 或分析失败）"
+          fi
+
       - name: Checkout code
+        if: steps.check_fix.outputs.should_fix == 'true'
         uses: actions/checkout@v5
         with:
           ref: ${{ github.event.workflow_run.head_branch }}
@@ -34,11 +66,13 @@ jobs:
           token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Setup git identity
+        if: steps.check_fix.outputs.should_fix == 'true'
         run: |
           git config --global user.email "claude[bot]@users.noreply.github.com"
           git config --global user.name "claude[bot]"
 
       - name: Create fix branch
+        if: steps.check_fix.outputs.should_fix == 'true'
         id: branch
         run: |
           BRANCH_NAME="claude-fix-${{ github.event.workflow_run.head_branch }}-${{ github.run_id }}"
@@ -46,21 +80,24 @@ jobs:
           echo "branch_name=$BRANCH_NAME" >> $GITHUB_OUTPUT
 
       - name: Get CI failure details
+        if: steps.check_fix.outputs.should_fix == 'true' && steps.check_fix.outputs.ci_run_id != ''
         id: failure_details
         uses: actions/github-script@v7
         continue-on-error: true
         with:
           script: |
+            const ciRunId = '${{ steps.check_fix.outputs.ci_run_id }}';
+
             const run = await github.rest.actions.getWorkflowRun({
               owner: context.repo.owner,
               repo: context.repo.repo,
-              run_id: ${{ github.event.workflow_run.id }}
+              run_id: parseInt(ciRunId)
             });
 
             const jobs = await github.rest.actions.listJobsForWorkflowRun({
               owner: context.repo.owner,
               repo: context.repo.repo,
-              run_id: ${{ github.event.workflow_run.id }}
+              run_id: parseInt(ciRunId)
             });
 
             const failedJobs = jobs.data.jobs.filter(job => job.conclusion === 'failure');
@@ -85,6 +122,7 @@ jobs:
             };
 
       - name: Validate failure details
+        if: steps.check_fix.outputs.should_fix == 'true'
         id: validate_details
         run: |
           if [ "${{ steps.failure_details.outcome }}" != "success" ] || [ -z '${{ steps.failure_details.outputs.result }}' ]; then
@@ -103,7 +141,7 @@ jobs:
           fi
 
       - name: Fix CI failures with Claude
-        if: steps.validate_details.outputs.valid == 'true'
+        if: steps.check_fix.outputs.should_fix == 'true' && steps.validate_details.outputs.valid == 'true'
         id: claude
         uses: anthropics/claude-code-action@v1
         with:
@@ -113,7 +151,6 @@ jobs:
 
             Failed CI Run: ${{ steps.validate_details.outputs.run_url }}
             Failed Jobs: ${{ steps.validate_details.outputs.failed_jobs }}
-            PR Number: ${{ github.event.workflow_run.pull_requests[0].number }}
             Branch Name: ${{ steps.branch.outputs.branch_name }}
             Base Branch: ${{ github.event.workflow_run.head_branch }}
             Repository: ${{ github.repository }}
@@ -126,4 +163,6 @@ jobs:
             2. Identify the root cause
             3. Make the necessary fixes
             4. Commit and push the changes
-          claude_args: "--allowedTools 'Edit,MultiEdit,Write,Read,Glob,Grep,LS,Bash(git:*),Bash(npm:*),Bash(npx:*),Bash(gh:*)'"
+          claude_args: |
+            --model claude-opus-4-5-20251101
+            --allowedTools "Edit,MultiEdit,Write,Read,Glob,Grep,LS,Bash(git:*),Bash(npm:*),Bash(npx:*),Bash(gh:*)"

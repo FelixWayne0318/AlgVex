@@ -17,6 +17,11 @@ jobs:
       issues: write
       id-token: write
 
+    # 添加 outputs 供 issue-triage 工作流使用
+    outputs:
+      is_duplicate: ${{ steps.set_result.outputs.is_duplicate }}
+      issue_number: ${{ github.event.issue.number }}
+
     steps:
       - name: Checkout repository
         uses: actions/checkout@v5
@@ -64,4 +69,21 @@ jobs:
             Be thorough but efficient. Focus on finding true duplicates, not just similar issues.
 
           claude_args: |
+            --model claude-opus-4-5-20251101
             --allowedTools "mcp__github__get_issue,mcp__github__search_issues,mcp__github__list_issues,mcp__github__create_issue_comment,mcp__github__update_issue,mcp__github__get_issue_comments"
+
+      - name: Set duplicate result
+        id: set_result
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # 检查是否添加了 duplicate 标签
+          LABELS=$(gh issue view ${{ github.event.issue.number }} --json labels --jq '.labels[].name' 2>/dev/null || echo "")
+
+          if echo "$LABELS" | grep -qi "duplicate"; then
+            echo "is_duplicate=true" >> $GITHUB_OUTPUT
+            echo "✅ Issue 已标记为重复"
+          else
+            echo "is_duplicate=false" >> $GITHUB_OUTPUT
+            echo "✅ Issue 不是重复，可以继续分类"
+          fi
