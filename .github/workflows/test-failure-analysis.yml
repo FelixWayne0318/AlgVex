@@ -17,7 +17,7 @@ permissions:
 jobs:
   detect-flaky:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 15
     if: ${{ github.event.workflow_run.conclusion == 'failure' }}
 
     # 添加 outputs 供 ci-failure-auto-fix 工作流使用

@@ -407,7 +407,7 @@ fi
 
 **关键配置**：
 ```yaml
-timeout-minutes: 10
+timeout-minutes: 15
 ```
 
 **模型配置**：
@@ -581,7 +581,7 @@ concurrency:
 | issue-triage.yml | 10 分钟 |
 | issue-deduplication.yml | 10 分钟 |
 | ci-failure-auto-fix.yml | 20 分钟 |
-| test-failure-analysis.yml | 10 分钟 |
+| test-failure-analysis.yml | 15 分钟 |
 | manual-code-analysis.yml | 15 分钟 |
 
 ---
