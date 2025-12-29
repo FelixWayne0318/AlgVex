@@ -127,25 +127,72 @@ echo "Test script executed"
 
 ### 预期流程
 
-1. **T+0**: 提交 PR，CI 开始运行
-2. **T+2min**: CI `shellcheck` job 失败
-3. **T+3min**: Test Failure Analysis 开始运行
-4. **T+5min**: Test Failure Analysis 完成，判断 `should_auto_fix=true`
-5. **T+6min**: Auto Fix CI Failures 开始运行
-6. **T+10min**: Claude 分析并修复错误，创建修复 PR
-7. **T+11min**: 修复 PR 触发 PR Review
-8. **T+15min**: PR Review 完成，修复 PR 的 CI 通过
+```
+阶段 1: 错误检测与分析
+├─ T+0min:  提交 PR，CI 开始运行
+├─ T+2min:  CI shellcheck job 失败
+├─ T+3min:  Test Failure Analysis 自动触发
+└─ T+8min:  Analysis 完成，输出 should_auto_fix=true
+
+阶段 2: 自动修复
+├─ T+9min:  Auto Fix CI Failures 自动触发
+├─ T+15min: Claude 分析并修复错误
+├─ T+16min: 创建修复 PR (claude-fix-* 分支)
+└─ T+17min: 修复 PR 触发 PR Review
+
+阶段 3: 验证与合并
+├─ T+20min: 修复 PR 的 CI 运行并通过
+├─ T+22min: PR Review 完成
+├─ T+??min: 【人工操作】审查并合并修复 PR
+└─ T+??min: 原始分支 CI 重新运行
+
+阶段 4: 系统恢复
+└─ 原始 PR 的 CI 全部通过 → 系统恢复正常 ✅
+```
 
 ### 验证检查点
 
-| 检查点 | 预期结果 | 验证方法 |
-|--------|----------|----------|
-| CI 失败 | shellcheck job 失败 | 查看 Actions 页面 |
-| Analysis 运行 | 正确分析为非 flaky | 查看 Analysis 日志中的 `should_auto_fix=true` |
-| Auto Fix 触发 | 创建 claude-fix-* 分支 | 查看仓库分支列表 |
-| 修复 PR 创建 | PR 标题包含 "Auto-fix" | 查看 PR 列表 |
-| PR Review 运行 | 自动审查评论 | 查看 PR 评论 |
-| 修复后 CI 通过 | 所有 job 成功 | 查看修复 PR 的 CI 状态 |
+| 阶段 | 检查点 | 预期结果 | 验证方法 |
+|------|--------|----------|----------|
+| 1 | CI 失败 | shellcheck job 失败 | 查看 Actions 页面 |
+| 1 | Analysis 触发 | workflow_run 事件触发 | 查看 Actions 页面 |
+| 1 | Analysis 判断 | `should_auto_fix=true` | 查看 Analysis 日志 |
+| 2 | Auto Fix 触发 | 检测到需要修复 | 查看 Auto Fix 日志 |
+| 2 | 修复分支创建 | `claude-fix-*` 分支存在 | 查看仓库分支列表 |
+| 2 | 修复 PR 创建 | PR 标题包含 "Auto-fix" | 查看 PR 列表 |
+| 3 | 修复 PR CI | 所有 job 成功 | 查看修复 PR 的 CI 状态 |
+| 3 | PR Review | 自动审查评论 | 查看 PR 评论 |
+| 4 | **系统恢复** | 原始 PR CI 全部通过 | 合并后查看原始 PR |
+
+### 完整闭环验证步骤
+
+测试完成的标志是**系统完全恢复正常**，需要执行以下验证：
+
+1. **验证修复 PR 的 CI 通过**
+   ```
+   修复 PR → CI 运行 → 所有 job 通过 ✅
+   ```
+
+2. **人工审查修复内容**
+   - 检查 Claude 的修复是否正确
+   - 确认没有引入新问题
+   - 批准并合并 PR
+
+3. **验证原始分支恢复**
+   ```
+   合并修复 PR
+       ↓
+   原始分支获得修复代码
+       ↓
+   原始 PR 的 CI 重新运行
+       ↓
+   所有 job 通过 → 系统恢复正常 ✅
+   ```
+
+4. **最终确认**
+   - 原始 PR 可以正常合并
+   - 没有遗留的 claude-fix-* 分支
+   - 测试错误文件已删除
 
 ## 测试后清理
 
