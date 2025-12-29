@@ -31,44 +31,50 @@ jobs:
           # 获取触发此工作流的 Issue Deduplication 运行 ID
           RUN_ID="${{ github.event.workflow_run.id }}"
 
-          # 下载日志并检查 is_duplicate
+          # 下载日志并检查 is_duplicate 和 issue_number
           LOGS=$(gh run view "$RUN_ID" --log 2>/dev/null || echo "")
+
+          # 从日志中提取 issue_number（匹配 "issue_number=数字" 或 "Processing Issue: #数字"）
+          ISSUE_NUMBER=$(echo "$LOGS" | grep -E 'issue_number=[0-9]+|Processing Issue: #[0-9]+' | grep -oE '[0-9]+' | head -1 || echo "")
 
           if echo "$LOGS" | grep -q "is_duplicate=true"; then
             echo "should_triage=false" >> $GITHUB_OUTPUT
-            echo "⚠️ Issue 是重复的，跳过分类"
+            echo "⚠️ Issue #$ISSUE_NUMBER 是重复的，跳过分类"
           else
             echo "should_triage=true" >> $GITHUB_OUTPUT
-            echo "✅ Issue 不是重复，继续分类"
 
-            # 从日志中获取 issue number
-            ISSUE_NUMBER=$(echo "$LOGS" | grep -oP 'issue_number=\K\d+' | head -1 || echo "")
             if [ -n "$ISSUE_NUMBER" ]; then
               echo "issue_number=$ISSUE_NUMBER" >> $GITHUB_OUTPUT
+              echo "✅ Issue #$ISSUE_NUMBER 不是重复，继续分类"
+            else
+              echo "issue_number=" >> $GITHUB_OUTPUT
+              echo "⚠️ 无法从日志中获取 Issue number"
             fi
           fi
 
-      - name: Get Issue number from workflow run
+      - name: Verify Issue number
         if: steps.check_triage.outputs.should_triage == 'true'
         id: get_issue
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          # 尝试从 check_triage 步骤获取 issue number
           ISSUE_NUMBER="${{ steps.check_triage.outputs.issue_number }}"
 
-          # 如果没有获取到，尝试从工作流运行的关联 issues 获取
           if [ -z "$ISSUE_NUMBER" ]; then
-            # 获取最近创建的 issue（因为 deduplication 刚处理完）
-            ISSUE_NUMBER=$(gh issue list --state open --limit 1 --json number --jq '.[0].number' 2>/dev/null || echo "")
+            echo "::error::无法获取 Issue number，跳过分类"
+            echo "issue_number=" >> $GITHUB_OUTPUT
+            exit 0
           fi
 
-          if [ -n "$ISSUE_NUMBER" ]; then
+          # 验证 Issue 是否存在且为 open 状态
+          ISSUE_STATE=$(gh issue view "$ISSUE_NUMBER" --json state --jq '.state' 2>/dev/null || echo "")
+
+          if [ "$ISSUE_STATE" = "OPEN" ]; then
             echo "issue_number=$ISSUE_NUMBER" >> $GITHUB_OUTPUT
-            echo "✅ 找到 Issue: #$ISSUE_NUMBER"
+            echo "✅ 验证 Issue #$ISSUE_NUMBER 存在且为 open 状态"
           else
             echo "issue_number=" >> $GITHUB_OUTPUT
-            echo "⚠️ 未找到 Issue number"
+            echo "⚠️ Issue #$ISSUE_NUMBER 不存在或已关闭 (state=$ISSUE_STATE)"
           fi
 
       - name: Checkout repository

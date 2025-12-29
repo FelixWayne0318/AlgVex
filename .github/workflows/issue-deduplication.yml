@@ -77,13 +77,17 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
+          # 输出 issue_number 到日志，供 issue-triage 工作流使用
+          echo "issue_number=${{ github.event.issue.number }}" >> $GITHUB_OUTPUT
+          echo "📋 Processing Issue: #${{ github.event.issue.number }}"
+
           # 检查是否添加了 duplicate 标签
           LABELS=$(gh issue view ${{ github.event.issue.number }} --json labels --jq '.labels[].name' 2>/dev/null || echo "")
 
           if echo "$LABELS" | grep -qi "duplicate"; then
             echo "is_duplicate=true" >> $GITHUB_OUTPUT
-            echo "✅ Issue 已标记为重复"
+            echo "✅ Issue #${{ github.event.issue.number }} 已标记为重复"
           else
             echo "is_duplicate=false" >> $GITHUB_OUTPUT
-            echo "✅ Issue 不是重复，可以继续分类"
+            echo "✅ Issue #${{ github.event.issue.number }} 不是重复，可以继续分类"
           fi
