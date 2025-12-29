@@ -91,9 +91,12 @@ if [ -d "$QLIB_DIR" ]; then
             fi
 
             echo "Pulling latest changes..."
-            if git pull origin "$VERSION" 2>&1 | grep -q "Already up to date"; then
+            pull_output=$(git pull origin "$VERSION" 2>&1)
+            pull_exit_code=$?
+
+            if echo "$pull_output" | grep -q "Already up to date"; then
                 echo -e "${GREEN}Already up to date${NC}"
-            elif [ "${PIPESTATUS[0]}" -eq 0 ]; then
+            elif [ "$pull_exit_code" -eq 0 ]; then
                 echo -e "${GREEN}Updated successfully${NC}"
             else
                 echo -e "${RED}❌ Failed to pull changes${NC}"
