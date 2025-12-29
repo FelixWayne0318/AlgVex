@@ -322,9 +322,13 @@ Test Failure Analysis 完成
     ↓
 获取 CI 失败详情和错误日志
     ↓
-Claude 分析并修复
+Claude 分析并修复 (max-turns: 15)
     ↓
 提交到 claude-fix-* 分支
+    ↓
+✅ 自动创建 PR
+    ↓
+⚠️ 等待人工审查和合并
 ```
 
 **处理流程**：
@@ -333,9 +337,13 @@ Claude 分析并修复
 3. 检出失败的分支
 4. 创建修复分支 `claude-fix-{branch}-{run_id}`
 5. 获取 CI 失败详情和错误日志
-6. Claude 分析错误原因
+6. Claude 分析错误原因（限制 15 轮）
 7. 尝试自动修复
 8. 提交并推送修复
+9. **自动创建 PR**（新增）
+10. **在原始 PR 上添加评论通知**（新增）
+
+> ⚠️ **安全设计**：修复 PR 需要人工审查后才能合并，遵循 [官方推荐的 Human-in-the-loop 原则](https://skywork.ai/blog/how-to-use-claude-code-for-prs-code-reviews-guide/)
 
 **关键配置**：
 ```yaml
@@ -346,6 +354,7 @@ timeout-minutes: 20
 ```yaml
 claude_args: |
   --model claude-opus-4-5-20251101
+  --max-turns 15
   --allowedTools "Edit,MultiEdit,Write,Read,Glob,Grep,LS,Bash(git:*),Bash(npm:*),Bash(npx:*),Bash(gh:*)"
 ```
 
@@ -407,12 +416,13 @@ fi
 
 **关键配置**：
 ```yaml
-timeout-minutes: 15
+timeout-minutes: 10
 ```
 
 **模型配置**：
 ```yaml
 claude_args: |
+  --max-turns 5  # 简单判断任务，5 轮足够
   --model claude-opus-4-5-20251101
   --json-schema '{"type":"object","properties":{"is_flaky":{"type":"boolean"},"confidence":{"type":"number","minimum":0,"maximum":1},"summary":{"type":"string"}},"required":["is_flaky","confidence","summary"]}'
 ```
@@ -581,8 +591,22 @@ concurrency:
 | issue-triage.yml | 10 分钟 |
 | issue-deduplication.yml | 10 分钟 |
 | ci-failure-auto-fix.yml | 20 分钟 |
-| test-failure-analysis.yml | 15 分钟 |
+| test-failure-analysis.yml | 10 分钟 |
 | manual-code-analysis.yml | 15 分钟 |
+
+### max-turns 配置
+
+为防止 Claude 无限执行导致超时，所有工作流都配置了 `--max-turns` 参数：
+
+| 工作流 | max-turns | 说明 |
+|--------|-----------|------|
+| test-failure-analysis.yml | 5 | 简单判断任务，5 轮足够 |
+| ci-failure-auto-fix.yml | 15 | 复杂修复任务，需要更多轮次 |
+
+**说明**：
+- 每次工具调用消耗一个 turn
+- 设置 max-turns 可以防止无限循环和成本失控
+- 这是 [官方推荐的最佳实践](https://github.com/anthropics/claude-code-action/blob/main/docs/custom-automations.md)
 
 ---
 
