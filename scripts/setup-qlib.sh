@@ -1,4 +1,5 @@
 #!/bin/bash
+# shellcheck disable=SC2034  # Colors are used in echo -e statements
 #
 # Qlib Setup Script
 #
@@ -71,7 +72,7 @@ if [ -d "$QLIB_DIR" ]; then
             echo "Non-interactive mode: updating to $VERSION"
         fi
 
-        if [[ $REPLY =~ ^[Yy]$ ]]; then
+        if [[ "$REPLY" =~ ^[Yy]$ ]]; then
             # Check for uncommitted changes
             if ! git diff-index --quiet HEAD -- 2>/dev/null; then
                 echo -e "${YELLOW}⚠️  Uncommitted changes detected${NC}"
