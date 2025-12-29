@@ -54,6 +54,25 @@ chmod +x scripts/setup-qlib.sh
 
 更多集成方式和使用说明，请查看 [Qlib 集成说明](docs/WORKFLOWS-GUIDE.md#qlib-集成说明)
 
+## 🐝 Hummingbot 集成
+
+本项目还集成了开源加密货币做市机器人 [Hummingbot](https://github.com/hummingbot/hummingbot)。
+
+**当前 Hummingbot 版本**: v2.11.0
+
+### 快速开始
+
+```bash
+# 克隆 Hummingbot v2.11.0
+chmod +x scripts/setup-hummingbot.sh
+./scripts/setup-hummingbot.sh
+
+# 或指定其他版本
+./scripts/setup-hummingbot.sh v2.9.0
+```
+
+更多信息请访问 [Hummingbot 官方文档](https://docs.hummingbot.org/)
+
 ## 🚀 使用 Claude Code
 
 ### 在 Issue 中使用
@@ -70,6 +89,21 @@ chmod +x scripts/setup-qlib.sh
 ```
 
 详细使用方法请查看 [工作流使用指南](docs/WORKFLOW.md)
+
+## 🔐 配置 GitHub Secrets
+
+要使用 Claude Code 驱动的工作流，需要配置以下 Secret：
+
+### CLAUDE_CODE_OAUTH_TOKEN
+
+1. 访问 [Claude Code](https://claude.ai/code) 获取 OAuth Token
+2. 进入仓库 **Settings** → **Secrets and variables** → **Actions**
+3. 点击 **New repository secret**
+4. 名称填写 `CLAUDE_CODE_OAUTH_TOKEN`
+5. 值填写获取到的 Token
+6. 点击 **Add secret**
+
+> ⚠️ 注意：请妥善保管您的 Token，不要在代码中硬编码或公开分享。
 
 ## 🔗 相关链接
 

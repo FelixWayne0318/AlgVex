@@ -48,6 +48,7 @@ jobs:
       - name: Get CI failure details
         id: failure_details
         uses: actions/github-script@v7
+        continue-on-error: true
         with:
           script: |
             const run = await github.rest.actions.getWorkflowRun({
@@ -83,7 +84,26 @@ jobs:
               errorLogs: errorLogs
             };
 
+      - name: Validate failure details
+        id: validate_details
+        run: |
+          if [ "${{ steps.failure_details.outcome }}" != "success" ] || [ -z '${{ steps.failure_details.outputs.result }}' ]; then
+            echo "valid=false" >> $GITHUB_OUTPUT
+            echo "::warning::Failed to get CI failure details"
+          else
+            # Validate JSON format
+            if echo '${{ steps.failure_details.outputs.result }}' | jq -e . >/dev/null 2>&1; then
+              echo "valid=true" >> $GITHUB_OUTPUT
+              echo "run_url=$(echo '${{ steps.failure_details.outputs.result }}' | jq -r '.runUrl')" >> $GITHUB_OUTPUT
+              echo "failed_jobs=$(echo '${{ steps.failure_details.outputs.result }}' | jq -r '.failedJobs | join(", ")')" >> $GITHUB_OUTPUT
+            else
+              echo "valid=false" >> $GITHUB_OUTPUT
+              echo "::warning::Invalid JSON in failure details"
+            fi
+          fi
+
       - name: Fix CI failures with Claude
+        if: steps.validate_details.outputs.valid == 'true'
         id: claude
         uses: anthropics/claude-code-action@v1
         with:
@@ -91,15 +111,15 @@ jobs:
           prompt: |
             CI workflow failed. Please analyze and fix the issues.
 
-            Failed CI Run: ${{ fromJSON(steps.failure_details.outputs.result).runUrl }}
-            Failed Jobs: ${{ join(fromJSON(steps.failure_details.outputs.result).failedJobs, ', ') }}
+            Failed CI Run: ${{ steps.validate_details.outputs.run_url }}
+            Failed Jobs: ${{ steps.validate_details.outputs.failed_jobs }}
             PR Number: ${{ github.event.workflow_run.pull_requests[0].number }}
             Branch Name: ${{ steps.branch.outputs.branch_name }}
             Base Branch: ${{ github.event.workflow_run.head_branch }}
             Repository: ${{ github.repository }}
 
             Error logs:
-            ${{ toJSON(fromJSON(steps.failure_details.outputs.result).errorLogs) }}
+            ${{ steps.failure_details.outputs.result }}
 
             Please:
             1. Analyze the error logs
