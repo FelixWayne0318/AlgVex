@@ -10,14 +10,15 @@
 #
 # Arguments:
 #   version - Optional. Specify a Qlib version tag (e.g., v0.9.7)
-#             If not provided, uses the main branch
+#             If not provided, uses the default stable version
 #
 # Examples:
-#   ./scripts/setup-qlib.sh           # Clone/update to main branch
-#   ./scripts/setup-qlib.sh v0.9.7    # Clone/update to v0.9.7
+#   ./scripts/setup-qlib.sh           # Clone/update to default version (v0.9.7)
+#   ./scripts/setup-qlib.sh v0.9.6    # Clone/update to v0.9.6
+#   INTERACTIVE=false ./scripts/setup-qlib.sh v0.9.7  # Non-interactive mode
 #
 
-set -e  # Exit on error
+set -euo pipefail  # Exit on error, undefined vars, and pipe failures
 
 # Configuration
 QLIB_REPO="https://github.com/microsoft/qlib.git"
@@ -29,6 +30,9 @@ GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 RED='\033[0;31m'
 NC='\033[0m' # No Color
+
+# Interactive mode (can be disabled by setting INTERACTIVE=false)
+INTERACTIVE="${INTERACTIVE:-true}"
 
 # Get version from argument or use default
 VERSION="${1:-$DEFAULT_VERSION}"
@@ -51,18 +55,42 @@ if [ -d "$QLIB_DIR" ]; then
         git log -1 --oneline
         echo ""
 
-        read -p "Do you want to update to $VERSION? (y/n) " -n 1 -r
-        echo ""
+        # Prompt for update (or auto-accept in non-interactive mode)
+        if [ "$INTERACTIVE" = "true" ]; then
+            read -p "Do you want to update to $VERSION? (y/n) " -n 1 -r
+            echo ""
+        else
+            REPLY="y"
+            echo "Non-interactive mode: updating to $VERSION"
+        fi
 
         if [[ $REPLY =~ ^[Yy]$ ]]; then
+            # Check for uncommitted changes
+            if ! git diff-index --quiet HEAD -- 2>/dev/null; then
+                echo -e "${YELLOW}⚠️  Uncommitted changes detected${NC}"
+                echo "Please commit or stash your changes first."
+                exit 1
+            fi
+
             echo "Fetching latest changes..."
             git fetch origin
 
             echo "Checking out $VERSION..."
-            git checkout "$VERSION"
+            if ! git checkout "$VERSION"; then
+                echo -e "${RED}❌ Failed to checkout version $VERSION${NC}"
+                echo "Please verify the version tag exists."
+                exit 1
+            fi
 
             echo "Pulling latest changes..."
-            git pull origin "$VERSION" 2>/dev/null || echo "Already up to date"
+            if git pull origin "$VERSION" 2>&1 | grep -q "Already up to date"; then
+                echo -e "${GREEN}Already up to date${NC}"
+            elif [ ${PIPESTATUS[0]} -eq 0 ]; then
+                echo -e "${GREEN}Updated successfully${NC}"
+            else
+                echo -e "${RED}❌ Failed to pull changes${NC}"
+                exit 1
+            fi
 
             echo -e "${GREEN}✅ Qlib updated to $VERSION successfully${NC}"
         else
@@ -81,11 +109,19 @@ else
     echo "Version: $VERSION"
     echo ""
 
-    # Clone the repository
-    git clone --depth 1 --branch "$VERSION" "$QLIB_REPO" "$QLIB_DIR"
-
-    echo ""
-    echo -e "${GREEN}✅ Qlib $VERSION cloned successfully${NC}"
+    # Clone the repository with error handling
+    if git clone --depth 1 --branch "$VERSION" "$QLIB_REPO" "$QLIB_DIR"; then
+        echo ""
+        echo -e "${GREEN}✅ Qlib $VERSION cloned successfully${NC}"
+    else
+        echo ""
+        echo -e "${RED}❌ Failed to clone Qlib repository${NC}"
+        echo "Please check:"
+        echo "  - Network connectivity"
+        echo "  - Version tag exists: $VERSION"
+        echo "  - Repository URL: $QLIB_REPO"
+        exit 1
+    fi
 fi
 
 echo ""
