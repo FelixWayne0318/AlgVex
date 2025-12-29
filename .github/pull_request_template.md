@@ -21,11 +21,12 @@
 -->
 
 ## 使用 Claude 助手（Claude Usage）
-<!-- 
-如需 Claude Code 协助审查或生成代码，可在 PR 评论中 @claude 请求。
+<!--
+Claude 会自动审查所有 PR（除非标题包含 [skip review] 或 [wip]）。
+
+如需额外协助，可在 PR 评论中 @claude 请求。
 示例如下（提交 PR 后在评论区使用）：
 @claude 请审查以上代码并指出潜在的性能问题。
 
 Claude 将根据请求自动分析 PR 改动，并以评论形式反馈结果。
-注意：仅当 PR 带有 claude-review 标签时才会触发 Claude。
 -->

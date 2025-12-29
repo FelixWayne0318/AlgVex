@@ -37,6 +37,13 @@ INTERACTIVE="${INTERACTIVE:-true}"
 # Get version from argument or use default
 VERSION="${1:-$DEFAULT_VERSION}"
 
+# Validate version format (e.g., v0.9.7)
+if ! [[ "$VERSION" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+    echo -e "${RED}❌ Invalid version format: $VERSION${NC}"
+    echo "Version must be in format: vX.Y.Z (e.g., v0.9.7)"
+    exit 1
+fi
+
 echo "========================================="
 echo "Qlib Setup Script for AlgVex"
 echo "========================================="
