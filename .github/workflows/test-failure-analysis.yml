@@ -78,20 +78,23 @@ jobs:
             exit 0
           fi
 
-          # Extract and validate fields
-          IS_FLAKY=$(echo "$OUTPUT" | jq -r '.is_flaky // "null"')
-          CONFIDENCE=$(echo "$OUTPUT" | jq -r '.confidence // "0"')
-          SUMMARY=$(echo "$OUTPUT" | jq -r '.summary // "No summary available"')
-
-          if [ "$IS_FLAKY" = "null" ]; then
+          # Check if required field exists (using has() to avoid boolean false issue)
+          if ! echo "$OUTPUT" | jq -e 'has("is_flaky")' >/dev/null 2>&1; then
             echo "valid=false" >> $GITHUB_OUTPUT
             echo "::warning::Missing is_flaky field in output"
-          else
-            echo "valid=true" >> $GITHUB_OUTPUT
-            echo "is_flaky=$IS_FLAKY" >> $GITHUB_OUTPUT
-            echo "confidence=$CONFIDENCE" >> $GITHUB_OUTPUT
-            echo "summary=$SUMMARY" >> $GITHUB_OUTPUT
+            exit 0
           fi
+
+          # Extract fields (don't use // for boolean values to avoid false being treated as null)
+          IS_FLAKY=$(echo "$OUTPUT" | jq -r '.is_flaky')
+          CONFIDENCE=$(echo "$OUTPUT" | jq -r '.confidence // 0')
+          SUMMARY=$(echo "$OUTPUT" | jq -r '.summary // "No summary available"')
+
+          echo "valid=true" >> $GITHUB_OUTPUT
+          echo "is_flaky=$IS_FLAKY" >> $GITHUB_OUTPUT
+          echo "confidence=$CONFIDENCE" >> $GITHUB_OUTPUT
+          echo "summary=$SUMMARY" >> $GITHUB_OUTPUT
+          echo "✅ 解析成功: is_flaky=$IS_FLAKY, confidence=$CONFIDENCE"
 
       - name: Retry flaky tests
         if: |
