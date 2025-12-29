@@ -30,32 +30,38 @@ GitHub 事件
     │
     ├─── PR 评论 @claude ─────────────▶ claude.yml
     │
-    ├─── 新 Issue 创建 ───────────────▶ issue-triage.yml
-    │                                   issue-deduplication.yml
+    ├─── 新 Issue 创建 ───────────────▶ issue-deduplication.yml
+    │                                       ↓ (顺序执行)
+    │                                   issue-triage.yml
     │
     ├─── PR 创建/更新 ────────────────▶ pr-review.yml
     │                                   ci.yml
     │
-    ├─── CI 失败 ─────────────────────▶ ci-failure-auto-fix.yml
-    │                                   test-failure-analysis.yml
+    ├─── CI 失败 ─────────────────────▶ test-failure-analysis.yml
+    │                                       ↓ (顺序执行)
+    │                                   ci-failure-auto-fix.yml
     │
     └─── 手动触发 ────────────────────▶ manual-code-analysis.yml
 ```
+
+**注意**：Issue 和 CI 失败场景采用**顺序执行**，避免并发冲突和资源浪费。
 
 ---
 
 ## 工作流模块列表
 
-| 文件 | 功能 | 触发条件 |
-|------|------|----------|
-| `claude.yml` | @claude 交互响应 | Issue/PR 评论中 @claude |
-| `pr-review.yml` | PR 自动代码审查 | PR 创建、更新、ready_for_review |
-| `issue-triage.yml` | Issue 自动分类标签 | 新 Issue 创建 |
-| `issue-deduplication.yml` | Issue 重复检测 | 新 Issue 创建 |
-| `ci.yml` | 基础 CI 检查 | Push 到 main 或 PR |
-| `ci-failure-auto-fix.yml` | CI 失败自动修复 | CI workflow 失败 |
-| `test-failure-analysis.yml` | 测试失败分析 | CI workflow 失败 |
-| `manual-code-analysis.yml` | 手动代码分析 | 手动触发 |
+| 文件 | 功能 | 触发条件 | 模型 |
+|------|------|----------|------|
+| `claude.yml` | @claude 交互响应 | Issue/PR 评论中 @claude | Opus |
+| `pr-review.yml` | PR 自动代码审查 | PR 创建、更新、ready_for_review | Opus |
+| `issue-deduplication.yml` | Issue 重复检测 | 新 Issue 创建 | Opus |
+| `issue-triage.yml` | Issue 自动分类标签 | **Issue Deduplication 完成后** | Opus |
+| `ci.yml` | 基础 CI 检查 | Push 到 main 或 PR | - |
+| `test-failure-analysis.yml` | 测试失败分析 | CI workflow 失败 | Opus |
+| `ci-failure-auto-fix.yml` | CI 失败自动修复 | **Test Failure Analysis 完成后** | Opus |
+| `manual-code-analysis.yml` | 手动代码分析 | 手动触发 | Opus |
+
+**说明**：所有 Claude 工作流默认使用 `claude-opus-4-5-20251101` 模型。
 
 ---
 
@@ -166,19 +172,44 @@ claude_args: |
 **功能**：自动为新创建的 Issue 添加分类标签。
 
 **触发条件**：
-- 新 Issue 创建 (`issues: opened`)
+- **Issue Deduplication 工作流完成后** (`workflow_run: workflows: ["Issue Deduplication"]`)
+- 仅当 Issue 不是重复时才执行
+
+**执行流程**：
+```
+Issue Deduplication 完成
+    ↓
+检查日志: is_duplicate=true?
+    ├─ 是 → 跳过分类
+    └─ 否 → 继续执行
+         ↓
+从日志提取 issue_number
+    ↓
+验证 Issue 存在且为 OPEN 状态
+    ↓
+Claude 分析并添加标签
+```
 
 **处理逻辑**：
-1. 读取 Issue 标题和内容
-2. 分析 Issue 类型（bug、feature、question、documentation）
-3. 判断优先级（low、medium、high、critical）
-4. 识别相关组件或代码区域
-5. 自动添加对应标签
+1. 从 Issue Deduplication 日志中提取 issue_number
+2. 验证 Issue 是否存在且为 OPEN 状态
+3. 读取 Issue 标题和内容
+4. 分析 Issue 类型（bug、feature、question、documentation）
+5. 判断优先级（low、medium、high、critical）
+6. 识别相关组件或代码区域
+7. 自动添加对应标签
 
 **关键配置**：
 ```yaml
 timeout-minutes: 10
 allowed_non_write_users: "*"  # 允许所有用户创建 Issue
+```
+
+**模型配置**：
+```yaml
+claude_args: |
+  --model claude-opus-4-5-20251101
+  --allowedTools "mcp__github__get_issue,mcp__github__update_issue,mcp__github__create_issue_comment"
 ```
 
 **权限配置**：
@@ -187,13 +218,14 @@ permissions:
   contents: read   # 读取仓库内容
   issues: write    # 管理 Issue（添加标签、评论）
   id-token: write  # OIDC 认证
+  actions: read    # 读取 workflow_run 日志
 ```
 
 ---
 
 ### 4. issue-deduplication.yml - Issue 重复检测
 
-**功能**：检测新创建的 Issue 是否与现有 Issue 重复。
+**功能**：检测新创建的 Issue 是否与现有 Issue 重复。**这是 Issue 处理流程的第一步**。
 
 **触发条件**：
 - 新 Issue 创建 (`issues: opened`)
@@ -212,10 +244,25 @@ permissions:
    - 添加 `duplicate` 标签
    - 建议用户关注原始 Issue
 4. 如果不是重复：不做任何操作
+5. **输出结果供 issue-triage.yml 使用**
+
+**输出变量**：
+```bash
+# 输出到日志，供 issue-triage 工作流读取
+echo "issue_number=${{ github.event.issue.number }}" >> $GITHUB_OUTPUT
+echo "is_duplicate=true/false" >> $GITHUB_OUTPUT
+```
 
 **关键配置**：
 ```yaml
 timeout-minutes: 10
+```
+
+**模型配置**：
+```yaml
+claude_args: |
+  --model claude-opus-4-5-20251101
+  --allowedTools "mcp__github__get_issue,mcp__github__search_issues,mcp__github__list_issues,mcp__github__create_issue_comment,mcp__github__update_issue,mcp__github__get_issue_comments"
 ```
 
 **权限配置**：
@@ -224,12 +271,6 @@ permissions:
   contents: read   # 读取仓库内容
   issues: write    # 管理 Issue（添加标签、评论）
   id-token: write  # OIDC 认证
-```
-
-**允许工具**：
-```yaml
-claude_args: |
-  --allowedTools "mcp__github__get_issue,mcp__github__search_issues,mcp__github__list_issues,mcp__github__create_issue_comment,mcp__github__update_issue,mcp__github__get_issue_comments"
 ```
 
 ---
@@ -262,25 +303,50 @@ permissions:
 
 ### 6. ci-failure-auto-fix.yml - CI 失败自动修复
 
-**功能**：当 CI 失败时，自动分析错误并尝试修复。
+**功能**：当 CI 失败时，自动分析错误并尝试修复。**这是 CI 失败处理的第二步**。
 
 **触发条件**：
-- CI workflow (`workflow_run: workflows: ["CI"], types: [completed]`)
-- CI 运行结论为 `failure` (`github.event.workflow_run.conclusion == 'failure'`)
-- 存在关联的 PR (`github.event.workflow_run.pull_requests[0]`)
-- 分支名不以 `claude-fix-` 开头（`!startsWith(github.event.workflow_run.head_branch, 'claude-fix-')`，防止循环）
+- **Test Failure Analysis 工作流完成后** (`workflow_run: workflows: ["Test Failure Analysis"]`)
+- 仅当 Analysis 判断为非 flaky test 时才执行
+- 分支名不以 `claude-fix-` 开头（防止循环）
+
+**执行流程**：
+```
+Test Failure Analysis 完成
+    ↓
+检查日志: should_auto_fix=true?
+    ├─ 否 → 跳过（可能是 flaky test）
+    └─ 是 → 继续执行
+         ↓
+获取失败的 CI 运行 ID
+    ↓
+获取 CI 失败详情和错误日志
+    ↓
+Claude 分析并修复
+    ↓
+提交到 claude-fix-* 分支
+```
 
 **处理流程**：
-1. 检出失败的分支
-2. 创建修复分支 `claude-fix-{branch}-{run_id}`
-3. 获取 CI 失败详情和错误日志
-4. Claude 分析错误原因
-5. 尝试自动修复
-6. 提交并推送修复
+1. 从 Test Failure Analysis 日志检查 `should_auto_fix=true`
+2. 获取失败的 CI 运行信息
+3. 检出失败的分支
+4. 创建修复分支 `claude-fix-{branch}-{run_id}`
+5. 获取 CI 失败详情和错误日志
+6. Claude 分析错误原因
+7. 尝试自动修复
+8. 提交并推送修复
 
 **关键配置**：
 ```yaml
 timeout-minutes: 20
+```
+
+**模型配置**：
+```yaml
+claude_args: |
+  --model claude-opus-4-5-20251101
+  --allowedTools "Edit,MultiEdit,Write,Read,Glob,Grep,LS,Bash(git:*),Bash(npm:*),Bash(npx:*),Bash(gh:*)"
 ```
 
 **权限配置**：
@@ -293,11 +359,6 @@ permissions:
   id-token: write      # OIDC 认证
 ```
 
-**允许工具**：
-```yaml
-claude_args: "--allowedTools 'Edit,MultiEdit,Write,Read,Glob,Grep,LS,Bash(git:*),Bash(npm:*),Bash(npx:*),Bash(gh:*)'"
-```
-
 **Git 配置**：
 ```yaml
 git config --global user.email "claude[bot]@users.noreply.github.com"
@@ -308,10 +369,10 @@ git config --global user.name "claude[bot]"
 
 ### 7. test-failure-analysis.yml - 测试失败分析
 
-**功能**：分析 CI 失败是否为 Flaky 测试（不稳定测试）。
+**功能**：分析 CI 失败是否为 Flaky 测试（不稳定测试）。**这是 CI 失败处理的第一步**。
 
 **触发条件**：
-- CI workflow (`workflow_run: workflows: ["CI"], types: [completed]`)
+- CI workflow 完成 (`workflow_run: workflows: ["CI"], types: [completed]`)
 - CI 运行结论为 `failure` (`github.event.workflow_run.conclusion == 'failure'`)
 
 **分析标准**：
@@ -330,6 +391,16 @@ git config --global user.name "claude[bot]"
 }
 ```
 
+**输出变量**（供 ci-failure-auto-fix.yml 使用）：
+```bash
+# 只有当不是 flaky test 时才应该自动修复
+if [ "$IS_FLAKY" == "false" ]; then
+  echo "should_auto_fix=true" >> $GITHUB_OUTPUT
+else
+  echo "should_auto_fix=false" >> $GITHUB_OUTPUT
+fi
+```
+
 **自动重试**：
 - 如果判断为 Flaky 测试且置信度 >= 0.7
 - 自动重新触发 CI workflow
@@ -339,18 +410,19 @@ git config --global user.name "claude[bot]"
 timeout-minutes: 10
 ```
 
+**模型配置**：
+```yaml
+claude_args: |
+  --model claude-opus-4-5-20251101
+  --json-schema '{"type":"object","properties":{"is_flaky":{"type":"boolean"},"confidence":{"type":"number","minimum":0,"maximum":1},"summary":{"type":"string"}},"required":["is_flaky","confidence","summary"]}'
+```
+
 **权限配置**：
 ```yaml
 permissions:
   contents: read   # 读取仓库内容
   actions: write   # 重新触发 workflow
   id-token: write  # OIDC 认证
-```
-
-**JSON Schema 输出**：
-```yaml
-claude_args: |
-  --json-schema '{"type":"object","properties":{"is_flaky":{"type":"boolean","description":"Whether this appears to be a flaky test failure"},"confidence":{"type":"number","minimum":0,"maximum":1,"description":"Confidence level in the determination"},"summary":{"type":"string","description":"One-sentence explanation of the failure"}},"required":["is_flaky","confidence","summary"]}'
 ```
 
 ---
@@ -390,35 +462,45 @@ permissions:
 ## 工作流触发关系
 
 ```
-                    ┌──────────────────┐
-                    │    用户操作       │
-                    └────────┬─────────┘
-                             │
-        ┌────────────────────┼────────────────────┐
-        │                    │                    │
-        ▼                    ▼                    ▼
-┌───────────────┐   ┌───────────────┐   ┌───────────────┐
-│ Issue 评论    │   │ 创建 PR       │   │ 创建 Issue    │
-│ @claude       │   │               │   │               │
-└───────┬───────┘   └───────┬───────┘   └───────┬───────┘
-        │                   │                   │
-        ▼                   ▼                   ▼
-┌───────────────┐   ┌───────────────┐   ┌───────────────┐
-│ claude.yml    │   │ pr-review.yml │   │issue-triage   │
-│               │   │ ci.yml        │   │issue-dedup    │
-└───────────────┘   └───────┬───────┘   └───────────────┘
-                            │
-                            ▼
-                    ┌───────────────┐
-                    │ CI 失败？      │
-                    └───────┬───────┘
-                            │ 是
-                            ▼
-                    ┌───────────────┐
-                    │ci-failure-fix │
-                    │test-analysis  │
-                    └───────────────┘
+                        ┌──────────────────┐
+                        │    用户操作       │
+                        └────────┬─────────┘
+                                 │
+        ┌────────────────────────┼────────────────────────┐
+        │                        │                        │
+        ▼                        ▼                        ▼
+┌───────────────┐       ┌───────────────┐       ┌───────────────┐
+│ Issue 评论    │       │ 创建 PR       │       │ 创建 Issue    │
+│ @claude       │       │               │       │               │
+└───────┬───────┘       └───────┬───────┘       └───────┬───────┘
+        │                       │                       │
+        ▼                       ▼                       ▼
+┌───────────────┐       ┌───────────────┐       ┌───────────────┐
+│ claude.yml    │       │ pr-review.yml │       │issue-dedup.yml│
+│               │       │ ci.yml        │       │ (第一步)      │
+└───────────────┘       └───────┬───────┘       └───────┬───────┘
+                                │                       │
+                                ▼                       ▼ (顺序执行)
+                        ┌───────────────┐       ┌───────────────┐
+                        │ CI 失败？      │       │issue-triage   │
+                        └───────┬───────┘       │ (第二步)      │
+                                │ 是            └───────────────┘
+                                ▼
+                        ┌───────────────┐
+                        │test-analysis  │
+                        │ (第一步)      │
+                        └───────┬───────┘
+                                │
+                                ▼ (顺序执行)
+                        ┌───────────────┐
+                        │ci-failure-fix │
+                        │ (第二步)      │
+                        └───────────────┘
 ```
+
+**说明**：
+- **Issue 场景**：`issue-deduplication` → `issue-triage`（顺序执行）
+- **CI 失败场景**：`test-failure-analysis` → `ci-failure-auto-fix`（顺序执行）
 
 ---
 
@@ -455,9 +537,10 @@ concurrency:
 **issue-triage.yml**：
 ```yaml
 concurrency:
-  group: issue-triage-${{ github.event.issue.number }}
+  group: issue-triage-${{ github.event.workflow_run.id }}
   cancel-in-progress: false
 ```
+> 注意：由于 issue-triage 现在由 workflow_run 触发，使用 `workflow_run.id` 而非 `issue.number`
 
 **issue-deduplication.yml**：
 ```yaml
