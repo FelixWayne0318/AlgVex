@@ -1,42 +1,31 @@
-name: Test Failure Analysis
+name: Auto-Retry Flaky Tests
+
+# This example demonstrates using structured outputs to detect flaky test failures
+# and automatically retry them, reducing noise from intermittent failures.
+#
+# Use case: When CI fails, automatically determine if it's likely flaky and retry if so.
 
 on:
   workflow_run:
     workflows: ["CI"]
     types: [completed]
 
-concurrency:
-  group: test-analysis-${{ github.event.workflow_run.head_branch }}
-  cancel-in-progress: false
-
 permissions:
   contents: read
   actions: write
-  pull-requests: write
   id-token: write
 
 jobs:
   detect-flaky:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
     if: ${{ github.event.workflow_run.conclusion == 'failure' }}
-
-    # 添加 outputs 供 ci-failure-auto-fix 工作流使用
-    outputs:
-      is_flaky: ${{ steps.validate.outputs.is_flaky }}
-      should_auto_fix: ${{ steps.set_result.outputs.should_auto_fix }}
-
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v5
-        with:
-          ref: ${{ github.event.workflow_run.head_sha }}
-          fetch-depth: 0
+        uses: actions/checkout@v4
 
       - name: Detect flaky test failures
         id: detect
         uses: anthropics/claude-code-action@v1
-        continue-on-error: true
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           prompt: |
@@ -56,108 +45,71 @@ jobs:
             - confidence: number 0-1 indicating confidence level
             - summary: brief one-sentence explanation
           claude_args: |
-            --model claude-opus-4-5-20251101
-            --max-turns 10
-            --allowedTools "Bash(gh run:*),Bash(gh api:*)"
             --json-schema '{"type":"object","properties":{"is_flaky":{"type":"boolean","description":"Whether this appears to be a flaky test failure"},"confidence":{"type":"number","minimum":0,"maximum":1,"description":"Confidence level in the determination"},"summary":{"type":"string","description":"One-sentence explanation of the failure"}},"required":["is_flaky","confidence","summary"]}'
 
-      - name: Validate detection output
-        id: validate
-        env:
-          DETECT_OUTCOME: ${{ steps.detect.outcome }}
-          STRUCTURED_OUTPUT: ${{ steps.detect.outputs.structured_output }}
-        run: |
-          if [ "$DETECT_OUTCOME" != "success" ] || [ -z "$STRUCTURED_OUTPUT" ]; then
-            echo "valid=false" >> $GITHUB_OUTPUT
-            echo "::warning::Detection step failed or returned empty output"
-            exit 0
-          fi
-
-          OUTPUT="$STRUCTURED_OUTPUT"
-
-          # Validate JSON format
-          if ! echo "$OUTPUT" | jq -e . >/dev/null 2>&1; then
-            echo "valid=false" >> $GITHUB_OUTPUT
-            echo "::warning::Invalid JSON output from detection step"
-            exit 0
-          fi
-
-          # Check if required field exists (using has() to avoid boolean false issue)
-          if ! echo "$OUTPUT" | jq -e 'has("is_flaky")' >/dev/null 2>&1; then
-            echo "valid=false" >> $GITHUB_OUTPUT
-            echo "::warning::Missing is_flaky field in output"
-            exit 0
-          fi
-
-          # Extract fields (don't use // for boolean values to avoid false being treated as null)
-          IS_FLAKY=$(echo "$OUTPUT" | jq -r '.is_flaky')
-          CONFIDENCE=$(echo "$OUTPUT" | jq -r '.confidence // 0')
-          SUMMARY=$(echo "$OUTPUT" | jq -r '.summary // "No summary available"')
-
-          echo "valid=true" >> $GITHUB_OUTPUT
-          echo "is_flaky=$IS_FLAKY" >> $GITHUB_OUTPUT
-          echo "confidence=$CONFIDENCE" >> $GITHUB_OUTPUT
-          echo "summary=$SUMMARY" >> $GITHUB_OUTPUT
-          echo "✅ 解析成功: is_flaky=$IS_FLAKY, confidence=$CONFIDENCE"
-
+      # Auto-retry only if flaky AND high confidence (>= 0.7)
       - name: Retry flaky tests
         if: |
-          steps.validate.outputs.valid == 'true' &&
-          steps.validate.outputs.is_flaky == 'true' &&
-          fromJSON(steps.validate.outputs.confidence) >= 0.7
+          fromJSON(steps.detect.outputs.structured_output).is_flaky == true &&
+          fromJSON(steps.detect.outputs.structured_output).confidence >= 0.7
         env:
           GH_TOKEN: ${{ github.token }}
-          CONFIDENCE: ${{ steps.validate.outputs.confidence }}
-          SUMMARY: ${{ steps.validate.outputs.summary }}
-          WORKFLOW_NAME: ${{ github.event.workflow_run.name }}
-          HEAD_BRANCH: ${{ github.event.workflow_run.head_branch }}
         run: |
-          echo "Flaky test detected (confidence: $CONFIDENCE)"
+          OUTPUT='${{ steps.detect.outputs.structured_output }}'
+          CONFIDENCE=$(echo "$OUTPUT" | jq -r '.confidence')
+          SUMMARY=$(echo "$OUTPUT" | jq -r '.summary')
+
+          echo "🔄 Flaky test detected (confidence: $CONFIDENCE)"
           echo "Summary: $SUMMARY"
           echo ""
           echo "Triggering automatic retry..."
 
-          gh workflow run "$WORKFLOW_NAME" --ref "$HEAD_BRANCH"
+          gh workflow run "${{ github.event.workflow_run.name }}" \
+            --ref "${{ github.event.workflow_run.head_branch }}"
 
-      - name: Comment on PR
+      # Low confidence flaky detection - skip retry
+      - name: Low confidence detection
         if: |
-          github.event.workflow_run.event == 'pull_request' &&
-          steps.validate.outputs.valid == 'true'
+          fromJSON(steps.detect.outputs.structured_output).is_flaky == true &&
+          fromJSON(steps.detect.outputs.structured_output).confidence < 0.7
+        run: |
+          OUTPUT='${{ steps.detect.outputs.structured_output }}'
+          CONFIDENCE=$(echo "$OUTPUT" | jq -r '.confidence')
+
+          echo "⚠️ Possible flaky test but confidence too low ($CONFIDENCE)"
+          echo "Not retrying automatically - manual review recommended"
+
+      # Comment on PR if this was a PR build
+      - name: Comment on PR
+        if: github.event.workflow_run.event == 'pull_request'
         env:
           GH_TOKEN: ${{ github.token }}
-          IS_FLAKY: ${{ steps.validate.outputs.is_flaky }}
-          CONFIDENCE: ${{ steps.validate.outputs.confidence }}
-          SUMMARY: ${{ steps.validate.outputs.summary }}
-          WORKFLOW_URL: ${{ github.event.workflow_run.html_url }}
-          HEAD_BRANCH: ${{ github.event.workflow_run.head_branch }}
         run: |
-          pr_number=$(gh pr list --head "$HEAD_BRANCH" --json number --jq '.[0].number')
+          OUTPUT='${{ steps.detect.outputs.structured_output }}'
+          IS_FLAKY=$(echo "$OUTPUT" | jq -r '.is_flaky')
+          CONFIDENCE=$(echo "$OUTPUT" | jq -r '.confidence')
+          SUMMARY=$(echo "$OUTPUT" | jq -r '.summary')
+
+          pr_number=$(gh pr list --head "${{ github.event.workflow_run.head_branch }}" --json number --jq '.[0].number')
 
           if [ -n "$pr_number" ]; then
             if [ "$IS_FLAKY" = "true" ]; then
-              TITLE="Flaky Test Detected"
-              ACTION="Automatically retrying the workflow"
+              TITLE="🔄 Flaky Test Detected"
+              ACTION="✅ Automatically retrying the workflow"
             else
-              TITLE="Test Failure"
-              ACTION="This appears to be a real bug - manual intervention needed"
+              TITLE="❌ Test Failure"
+              ACTION="⚠️ This appears to be a real bug - manual intervention needed"
             fi
 
-            COMMENT_BODY="## $TITLE"$'\n\n'"**Analysis**: $SUMMARY"$'\n'"**Confidence**: $CONFIDENCE"$'\n\n'"$ACTION"$'\n\n'"[View workflow run]($WORKFLOW_URL)"
+            gh pr comment "$pr_number" --body "$(cat <<EOF
+          ## $TITLE
 
-            gh pr comment "$pr_number" --body "$COMMENT_BODY"
-          fi
+          **Analysis**: $SUMMARY
+          **Confidence**: $CONFIDENCE
 
-      - name: Set analysis result
-        id: set_result
-        if: steps.validate.outputs.valid == 'true'
-        env:
-          IS_FLAKY: ${{ steps.validate.outputs.is_flaky }}
-        run: |
-          # 只有当不是 flaky test 时才应该自动修复
-          if [ "$IS_FLAKY" == "false" ]; then
-            echo "should_auto_fix=true" >> $GITHUB_OUTPUT
-            echo "✅ 不是 flaky test，建议自动修复"
-          else
-            echo "should_auto_fix=false" >> $GITHUB_OUTPUT
-            echo "⚠️ 检测到 flaky test，已触发重试，不需要自动修复"
+          $ACTION
+
+          [View workflow run](${{ github.event.workflow_run.html_url }})
+          EOF
+          )"
           fi

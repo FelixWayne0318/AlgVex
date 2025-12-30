@@ -2,13 +2,9 @@ name: Auto Fix CI Failures
 
 on:
   workflow_run:
-    workflows: ["Test Failure Analysis"]  # 依赖 Analysis 工作流，而非直接依赖 CI
+    workflows: ["CI"]
     types:
       - completed
-
-concurrency:
-  group: ci-fix-${{ github.event.workflow_run.head_branch }}
-  cancel-in-progress: false
 
 permissions:
   contents: write
@@ -19,46 +15,13 @@ permissions:
 
 jobs:
   auto-fix:
-    # 只有当 Analysis 工作流成功完成且判断需要自动修复时才执行
     if: |
-      github.event.workflow_run.conclusion == 'success' &&
-      !startsWith(github.event.workflow_run.head_branch, 'claude-fix-')
+      github.event.workflow_run.conclusion == 'failure' &&
+      github.event.workflow_run.pull_requests[0] &&
+      !startsWith(github.event.workflow_run.head_branch, 'claude-auto-fix-ci-')
     runs-on: ubuntu-latest
-    timeout-minutes: 20
     steps:
-      - name: Check if auto-fix is needed
-        id: check_fix
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          # 获取触发此工作流的 Test Failure Analysis 运行 ID
-          ANALYSIS_RUN_ID="${{ github.event.workflow_run.id }}"
-          BRANCH="${{ github.event.workflow_run.head_branch }}"
-
-          # 下载日志并检查 should_auto_fix
-          LOGS=$(gh run view "$ANALYSIS_RUN_ID" --log 2>/dev/null || echo "")
-
-          if echo "$LOGS" | grep -q "should_auto_fix=true"; then
-            echo "should_fix=true" >> $GITHUB_OUTPUT
-            echo "✅ 检测到需要自动修复"
-
-            # 获取最近失败的 CI 运行 ID（在同一分支上）
-            CI_RUN_ID=$(gh run list --workflow=ci.yml --branch="$BRANCH" --status=failure --limit=1 --json databaseId --jq '.[0].databaseId' 2>/dev/null || echo "")
-
-            if [ -n "$CI_RUN_ID" ]; then
-              echo "ci_run_id=$CI_RUN_ID" >> $GITHUB_OUTPUT
-              echo "✅ 找到失败的 CI 运行: $CI_RUN_ID"
-            else
-              echo "ci_run_id=" >> $GITHUB_OUTPUT
-              echo "⚠️ 未找到失败的 CI 运行"
-            fi
-          else
-            echo "should_fix=false" >> $GITHUB_OUTPUT
-            echo "⚠️ 不需要自动修复（可能是 flaky test 或分析失败）"
-          fi
-
       - name: Checkout code
-        if: steps.check_fix.outputs.should_fix == 'true'
         uses: actions/checkout@v5
         with:
           ref: ${{ github.event.workflow_run.head_branch }}
@@ -66,38 +29,32 @@ jobs:
           token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Setup git identity
-        if: steps.check_fix.outputs.should_fix == 'true'
         run: |
           git config --global user.email "claude[bot]@users.noreply.github.com"
           git config --global user.name "claude[bot]"
 
       - name: Create fix branch
-        if: steps.check_fix.outputs.should_fix == 'true'
         id: branch
         run: |
-          BRANCH_NAME="claude-fix-${{ github.event.workflow_run.head_branch }}-${{ github.run_id }}"
+          BRANCH_NAME="claude-auto-fix-ci-${{ github.event.workflow_run.head_branch }}-${{ github.run_id }}"
           git checkout -b "$BRANCH_NAME"
           echo "branch_name=$BRANCH_NAME" >> $GITHUB_OUTPUT
 
       - name: Get CI failure details
-        if: steps.check_fix.outputs.should_fix == 'true' && steps.check_fix.outputs.ci_run_id != ''
         id: failure_details
         uses: actions/github-script@v7
-        continue-on-error: true
         with:
           script: |
-            const ciRunId = '${{ steps.check_fix.outputs.ci_run_id }}';
-
             const run = await github.rest.actions.getWorkflowRun({
               owner: context.repo.owner,
               repo: context.repo.repo,
-              run_id: parseInt(ciRunId)
+              run_id: ${{ github.event.workflow_run.id }}
             });
 
             const jobs = await github.rest.actions.listJobsForWorkflowRun({
               owner: context.repo.owner,
               repo: context.repo.repo,
-              run_id: parseInt(ciRunId)
+              run_id: ${{ github.event.workflow_run.id }}
             });
 
             const failedJobs = jobs.data.jobs.filter(job => job.conclusion === 'failure');
@@ -121,135 +78,20 @@ jobs:
               errorLogs: errorLogs
             };
 
-      - name: Validate failure details
-        if: steps.check_fix.outputs.should_fix == 'true'
-        id: validate_details
-        env:
-          FAILURE_OUTCOME: ${{ steps.failure_details.outcome }}
-          FAILURE_RESULT: ${{ steps.failure_details.outputs.result }}
-        run: |
-          if [ "$FAILURE_OUTCOME" != "success" ] || [ -z "$FAILURE_RESULT" ]; then
-            echo "valid=false" >> $GITHUB_OUTPUT
-            echo "::warning::Failed to get CI failure details"
-          else
-            # Validate JSON format (use env var to avoid shell quoting issues)
-            if echo "$FAILURE_RESULT" | jq -e . >/dev/null 2>&1; then
-              echo "valid=true" >> $GITHUB_OUTPUT
-              echo "run_url=$(echo "$FAILURE_RESULT" | jq -r '.runUrl')" >> $GITHUB_OUTPUT
-              echo "failed_jobs=$(echo "$FAILURE_RESULT" | jq -r '.failedJobs | join(", ")')" >> $GITHUB_OUTPUT
-            else
-              echo "valid=false" >> $GITHUB_OUTPUT
-              echo "::warning::Invalid JSON in failure details"
-            fi
-          fi
-
       - name: Fix CI failures with Claude
-        if: steps.check_fix.outputs.should_fix == 'true' && steps.validate_details.outputs.valid == 'true'
         id: claude
         uses: anthropics/claude-code-action@v1
         with:
-          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           prompt: |
-            CI workflow failed. Please analyze and fix the issues.
-
-            Failed CI Run: ${{ steps.validate_details.outputs.run_url }}
-            Failed Jobs: ${{ steps.validate_details.outputs.failed_jobs }}
+            /fix-ci
+            Failed CI Run: ${{ fromJSON(steps.failure_details.outputs.result).runUrl }}
+            Failed Jobs: ${{ join(fromJSON(steps.failure_details.outputs.result).failedJobs, ', ') }}
+            PR Number: ${{ github.event.workflow_run.pull_requests[0].number }}
             Branch Name: ${{ steps.branch.outputs.branch_name }}
             Base Branch: ${{ github.event.workflow_run.head_branch }}
             Repository: ${{ github.repository }}
 
             Error logs:
-            ${{ steps.failure_details.outputs.result }}
-
-            Please:
-            1. Analyze the error logs
-            2. Identify the root cause
-            3. Make the necessary fixes
-            4. Commit and push the changes
-          claude_args: |
-            --model claude-opus-4-5-20251101
-            --max-turns 15
-            --allowedTools "Edit,MultiEdit,Write,Read,Glob,Grep,LS,Bash(git:*),Bash(npm:*),Bash(npx:*),Bash(gh:*)"
-
-      - name: Check for changes
-        if: steps.check_fix.outputs.should_fix == 'true'
-        id: check_changes
-        run: |
-          # 确保远程分支信息是最新的
-          git fetch origin "${{ github.event.workflow_run.head_branch }}" 2>/dev/null || true
-
-          # 检查远程分支是否存在
-          if ! git rev-parse --verify "origin/${{ github.event.workflow_run.head_branch }}" >/dev/null 2>&1; then
-            echo "has_changes=true" >> $GITHUB_OUTPUT
-            echo "⚠️ 远程分支不存在，假设有更改"
-            exit 0
-          fi
-
-          # 检查是否有未提交的更改或新提交
-          if git diff --quiet HEAD "origin/${{ github.event.workflow_run.head_branch }}"; then
-            echo "has_changes=false" >> $GITHUB_OUTPUT
-            echo "⚠️ 没有检测到代码更改"
-          else
-            echo "has_changes=true" >> $GITHUB_OUTPUT
-            echo "✅ 检测到代码更改"
-          fi
-
-      - name: Push changes
-        if: steps.check_fix.outputs.should_fix == 'true' && steps.check_changes.outputs.has_changes == 'true'
-        run: |
-          git push -u origin "${{ steps.branch.outputs.branch_name }}"
-          echo "✅ 已推送修复分支: ${{ steps.branch.outputs.branch_name }}"
-
-      - name: Create Pull Request
-        if: steps.check_fix.outputs.should_fix == 'true' && steps.check_changes.outputs.has_changes == 'true'
-        id: create_pr
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          PR_URL=$(gh pr create \
-            --base "${{ github.event.workflow_run.head_branch }}" \
-            --head "${{ steps.branch.outputs.branch_name }}" \
-            --title "🤖 Auto-fix: CI failure on ${{ github.event.workflow_run.head_branch }}" \
-            --body "$(cat <<'EOF'
-          ## 🤖 自动修复 CI 失败
-
-          此 PR 由 Claude 自动创建，用于修复 CI 失败。
-
-          ### 📋 详情
-          - **原始失败运行**: ${{ steps.validate_details.outputs.run_url }}
-          - **失败的 Jobs**: ${{ steps.validate_details.outputs.failed_jobs }}
-          - **基础分支**: ${{ github.event.workflow_run.head_branch }}
-
-          ### ⚠️ 请注意
-          - 此修复由 AI 生成，**请仔细审查后再合并**
-          - 确认 CI 通过后，人工批准合并
-
-          ---
-          *Generated by [claude-code-action](https://github.com/anthropics/claude-code-action)*
-          EOF
-          )")
-
-          echo "pr_url=$PR_URL" >> $GITHUB_OUTPUT
-          echo "✅ 已创建 PR: $PR_URL"
-
-      - name: Comment on original PR
-        if: |
-          steps.check_fix.outputs.should_fix == 'true' &&
-          steps.check_changes.outputs.has_changes == 'true' &&
-          github.event.workflow_run.event == 'pull_request'
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          # 获取原始 PR 编号
-          ORIGINAL_PR=$(gh pr list --head "${{ github.event.workflow_run.head_branch }}" --json number --jq '.[0].number' 2>/dev/null || echo "")
-
-          if [ -n "$ORIGINAL_PR" ]; then
-            gh pr comment "$ORIGINAL_PR" --body "## 🤖 自动修复已创建
-
-          CI 失败已被自动分析并修复。
-
-          **修复 PR**: ${{ steps.create_pr.outputs.pr_url }}
-
-          请审查修复 PR 并在确认后合并。"
-            echo "✅ 已在原始 PR #$ORIGINAL_PR 添加评论"
-          fi
+            ${{ toJSON(fromJSON(steps.failure_details.outputs.result).errorLogs) }}
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          claude_args: "--allowedTools 'Edit,MultiEdit,Write,Read,Glob,Grep,LS,Bash(git:*),Bash(bun:*),Bash(npm:*),Bash(npx:*),Bash(gh:*)'"
