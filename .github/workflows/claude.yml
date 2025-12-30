@@ -10,10 +10,6 @@ on:
   pull_request_review:
     types: [submitted]
 
-concurrency:
-  group: claude-${{ github.event.issue.number || github.event.pull_request.number || github.run_id }}
-  cancel-in-progress: false
-
 jobs:
   claude:
     if: |
@@ -22,7 +18,6 @@ jobs:
       (github.event_name == 'pull_request_review' && contains(github.event.review.body, '@claude')) ||
       (github.event_name == 'issues' && (contains(github.event.issue.body, '@claude') || contains(github.event.issue.title, '@claude')))
     runs-on: ubuntu-latest
-    timeout-minutes: 30
     permissions:
       contents: write
       pull-requests: write
@@ -30,27 +25,9 @@ jobs:
       id-token: write
       actions: read
     steps:
-      - name: Checkout repository (initial)
+      - name: Checkout repository
         uses: actions/checkout@v5
         with:
-          fetch-depth: 1
-
-      - name: Get PR branch (for issue_comment on PRs)
-        id: get_pr_branch
-        if: github.event_name == 'issue_comment' && github.event.issue.pull_request
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          PR_NUMBER="${{ github.event.issue.number }}"
-          PR_REF=$(gh pr view "$PR_NUMBER" --json headRefName --jq '.headRefName')
-          echo "ref=$PR_REF" >> $GITHUB_OUTPUT
-          echo "📌 PR #$PR_NUMBER branch: $PR_REF"
-
-      - name: Checkout PR branch
-        if: steps.get_pr_branch.outputs.ref != ''
-        uses: actions/checkout@v5
-        with:
-          ref: ${{ steps.get_pr_branch.outputs.ref }}
           fetch-depth: 1
 
       - name: Run Claude Code
@@ -58,9 +35,3 @@ jobs:
         uses: anthropics/claude-code-action@v1
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
-          use_sticky_comment: "true"
-          allowed_bots: "dependabot[bot],renovate[bot],claude[bot]"
-          claude_args: |
-            --model claude-opus-4-5-20251101
-            --max-turns 15
-            --allowedTools "Read,Edit,Write,Glob,Grep,WebSearch,WebFetch,Bash(git:*),Bash(gh:*),mcp__github__get_issue,mcp__github__search_issues,mcp__github__list_issues,mcp__github__create_issue_comment"
