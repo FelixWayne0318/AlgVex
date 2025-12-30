@@ -142,14 +142,9 @@ jobs:
               ACTION="This appears to be a real bug - manual intervention needed"
             fi
 
-            gh pr comment "$pr_number" --body "## $TITLE
+            COMMENT_BODY="## $TITLE"$'\n\n'"**Analysis**: $SUMMARY"$'\n'"**Confidence**: $CONFIDENCE"$'\n\n'"$ACTION"$'\n\n'"[View workflow run]($WORKFLOW_URL)"
 
-**Analysis**: $SUMMARY
-**Confidence**: $CONFIDENCE
-
-$ACTION
-
-[View workflow run]($WORKFLOW_URL)"
+            gh pr comment "$pr_number" --body "$COMMENT_BODY"
           fi
 
       - name: Set analysis result
