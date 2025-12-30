@@ -205,3 +205,9 @@ cython_debug/
 marimo/_static/
 marimo/_lsp/
 __marimo__/
+
+# External dependencies (cloned by setup scripts)
+# These directories contain Qlib and Hummingbot repositories
+# Users should clone them locally using scripts/setup-qlib.sh and scripts/setup-hummingbot.sh
+qlib/
+hummingbot/
