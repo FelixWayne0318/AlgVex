@@ -30,9 +30,22 @@ jobs:
       id-token: write
       actions: read
     steps:
+      - name: Get PR branch (for issue_comment on PRs)
+        id: get_pr_branch
+        if: github.event_name == 'issue_comment' && github.event.issue.pull_request
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          PR_NUMBER="${{ github.event.issue.number }}"
+          PR_REF=$(gh pr view "$PR_NUMBER" --json headRefName --jq '.headRefName')
+          echo "ref=$PR_REF" >> $GITHUB_OUTPUT
+          echo "📌 PR #$PR_NUMBER branch: $PR_REF"
+
       - name: Checkout repository
         uses: actions/checkout@v5
         with:
+          # 对于 issue_comment 在 PR 上的情况，checkout PR 分支
+          ref: ${{ steps.get_pr_branch.outputs.ref || github.ref }}
           fetch-depth: 1
 
       - name: Run Claude Code
@@ -44,4 +57,5 @@ jobs:
           allowed_bots: "dependabot[bot],renovate[bot],claude[bot]"
           claude_args: |
             --model claude-opus-4-5-20251101
+            --max-turns 15
             --allowedTools "WebSearch,WebFetch,Bash(gh search:*),mcp__github__get_issue,mcp__github__search_issues,mcp__github__list_issues,mcp__github__create_issue_comment"

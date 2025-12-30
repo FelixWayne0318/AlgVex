@@ -106,4 +106,5 @@ jobs:
             If the issue is unclear, add a comment asking for clarification using mcp__github__create_issue_comment.
           claude_args: |
             --model claude-opus-4-5-20251101
+            --max-turns 10
             --allowedTools "mcp__github__get_issue,mcp__github__update_issue,mcp__github__create_issue_comment"

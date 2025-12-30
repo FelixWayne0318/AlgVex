@@ -62,14 +62,17 @@ jobs:
 
       - name: Validate detection output
         id: validate
+        env:
+          DETECT_OUTCOME: ${{ steps.detect.outcome }}
+          STRUCTURED_OUTPUT: ${{ steps.detect.outputs.structured_output }}
         run: |
-          if [ "${{ steps.detect.outcome }}" != "success" ] || [ -z '${{ steps.detect.outputs.structured_output }}' ]; then
+          if [ "$DETECT_OUTCOME" != "success" ] || [ -z "$STRUCTURED_OUTPUT" ]; then
             echo "valid=false" >> $GITHUB_OUTPUT
             echo "::warning::Detection step failed or returned empty output"
             exit 0
           fi
 
-          OUTPUT='${{ steps.detect.outputs.structured_output }}'
+          OUTPUT="$STRUCTURED_OUTPUT"
 
           # Validate JSON format
           if ! echo "$OUTPUT" | jq -e . >/dev/null 2>&1; then
@@ -78,26 +81,29 @@ jobs:
             exit 0
           fi
 
-          # Extract and validate fields
-          IS_FLAKY=$(echo "$OUTPUT" | jq -r '.is_flaky // "null"')
-          CONFIDENCE=$(echo "$OUTPUT" | jq -r '.confidence // "0"')
-          SUMMARY=$(echo "$OUTPUT" | jq -r '.summary // "No summary available"')
-
-          if [ "$IS_FLAKY" = "null" ]; then
+          # Check if required field exists (using has() to avoid boolean false issue)
+          if ! echo "$OUTPUT" | jq -e 'has("is_flaky")' >/dev/null 2>&1; then
             echo "valid=false" >> $GITHUB_OUTPUT
             echo "::warning::Missing is_flaky field in output"
-          else
-            echo "valid=true" >> $GITHUB_OUTPUT
-            echo "is_flaky=$IS_FLAKY" >> $GITHUB_OUTPUT
-            echo "confidence=$CONFIDENCE" >> $GITHUB_OUTPUT
-            echo "summary=$SUMMARY" >> $GITHUB_OUTPUT
+            exit 0
           fi
+
+          # Extract fields (don't use // for boolean values to avoid false being treated as null)
+          IS_FLAKY=$(echo "$OUTPUT" | jq -r '.is_flaky')
+          CONFIDENCE=$(echo "$OUTPUT" | jq -r '.confidence // 0')
+          SUMMARY=$(echo "$OUTPUT" | jq -r '.summary // "No summary available"')
+
+          echo "valid=true" >> $GITHUB_OUTPUT
+          echo "is_flaky=$IS_FLAKY" >> $GITHUB_OUTPUT
+          echo "confidence=$CONFIDENCE" >> $GITHUB_OUTPUT
+          echo "summary=$SUMMARY" >> $GITHUB_OUTPUT
+          echo "✅ 解析成功: is_flaky=$IS_FLAKY, confidence=$CONFIDENCE"
 
       - name: Retry flaky tests
         if: |
           steps.validate.outputs.valid == 'true' &&
           steps.validate.outputs.is_flaky == 'true' &&
-          steps.validate.outputs.confidence >= 0.7
+          fromJSON(steps.validate.outputs.confidence) >= 0.7
         env:
           GH_TOKEN: ${{ github.token }}
         run: |

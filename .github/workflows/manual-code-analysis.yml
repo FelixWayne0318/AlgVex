@@ -47,4 +47,5 @@ jobs:
             ${{ github.event.inputs.analysis_type == 'security-review' && 'Task: Review the latest commit for potential security vulnerabilities. Check for exposed secrets, insecure coding patterns, dependency vulnerabilities, or any other security concerns. Provide specific recommendations if issues are found.' || '' }}
           claude_args: |
             --model claude-opus-4-5-20251101
+            --max-turns 10
             --allowedTools "Read,Grep,Glob,Bash(git:*)"
