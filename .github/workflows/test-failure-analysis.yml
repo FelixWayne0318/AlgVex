@@ -12,6 +12,7 @@ concurrency:
 permissions:
   contents: read
   actions: write
+  pull-requests: write
   id-token: write
 
 jobs:
@@ -106,14 +107,17 @@ jobs:
           fromJSON(steps.validate.outputs.confidence) >= 0.7
         env:
           GH_TOKEN: ${{ github.token }}
+          CONFIDENCE: ${{ steps.validate.outputs.confidence }}
+          SUMMARY: ${{ steps.validate.outputs.summary }}
+          WORKFLOW_NAME: ${{ github.event.workflow_run.name }}
+          HEAD_BRANCH: ${{ github.event.workflow_run.head_branch }}
         run: |
-          echo "Flaky test detected (confidence: ${{ steps.validate.outputs.confidence }})"
-          echo "Summary: ${{ steps.validate.outputs.summary }}"
+          echo "Flaky test detected (confidence: $CONFIDENCE)"
+          echo "Summary: $SUMMARY"
           echo ""
           echo "Triggering automatic retry..."
 
-          gh workflow run "${{ github.event.workflow_run.name }}" \
-            --ref "${{ github.event.workflow_run.head_branch }}"
+          gh workflow run "$WORKFLOW_NAME" --ref "$HEAD_BRANCH"
 
       - name: Comment on PR
         if: |
