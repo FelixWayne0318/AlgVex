@@ -4,10 +4,6 @@ on:
   issues:
     types: [opened]
 
-concurrency:
-  group: issue-dedup-${{ github.event.issue.number }}
-  cancel-in-progress: false
-
 jobs:
   deduplicate:
     runs-on: ubuntu-latest
@@ -16,11 +12,6 @@ jobs:
       contents: read
       issues: write
       id-token: write
-
-    # 添加 outputs 供 issue-triage 工作流使用
-    outputs:
-      is_duplicate: ${{ steps.set_result.outputs.is_duplicate }}
-      issue_number: ${{ github.event.issue.number }}
 
     steps:
       - name: Checkout repository
@@ -31,7 +22,6 @@ jobs:
       - name: Check for duplicate issues
         uses: anthropics/claude-code-action@v1
         with:
-          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           prompt: |
             Analyze this new issue and check if it's a duplicate of existing issues in the repository.
 
@@ -68,27 +58,6 @@ jobs:
 
             Be thorough but efficient. Focus on finding true duplicates, not just similar issues.
 
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           claude_args: |
-            --model claude-opus-4-5-20251101
-            --max-turns 10
             --allowedTools "mcp__github__get_issue,mcp__github__search_issues,mcp__github__list_issues,mcp__github__create_issue_comment,mcp__github__update_issue,mcp__github__get_issue_comments"
-
-      - name: Set duplicate result
-        id: set_result
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          # 输出 issue_number 到日志，供 issue-triage 工作流使用
-          echo "issue_number=${{ github.event.issue.number }}" >> $GITHUB_OUTPUT
-          echo "📋 Processing Issue: #${{ github.event.issue.number }}"
-
-          # 检查是否添加了 duplicate 标签
-          LABELS=$(gh issue view ${{ github.event.issue.number }} --json labels --jq '.labels[].name' 2>/dev/null || echo "")
-
-          if echo "$LABELS" | grep -qi "duplicate"; then
-            echo "is_duplicate=true" >> $GITHUB_OUTPUT
-            echo "✅ Issue #${{ github.event.issue.number }} 已标记为重复"
-          else
-            echo "is_duplicate=false" >> $GITHUB_OUTPUT
-            echo "✅ Issue #${{ github.event.issue.number }} 不是重复，可以继续分类"
-          fi

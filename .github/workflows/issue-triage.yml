@@ -1,98 +1,31 @@
 name: Issue Triage
 
 on:
-  workflow_run:
-    workflows: ["Issue Deduplication"]  # 依赖 Deduplication 工作流
-    types:
-      - completed
-
-concurrency:
-  group: issue-triage-${{ github.event.workflow_run.id }}
-  cancel-in-progress: false
+  issues:
+    types: [opened]
 
 jobs:
-  triage:
-    # 只有当 Deduplication 工作流成功完成且 Issue 不是重复时才执行
-    if: github.event.workflow_run.conclusion == 'success'
+  triage-issue:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
       contents: read
       issues: write
       id-token: write
-      actions: read
 
     steps:
-      - name: Check if triage is needed
-        id: check_triage
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          # 获取触发此工作流的 Issue Deduplication 运行 ID
-          RUN_ID="${{ github.event.workflow_run.id }}"
-
-          # 下载日志并检查 is_duplicate 和 issue_number
-          LOGS=$(gh run view "$RUN_ID" --log 2>/dev/null || echo "")
-
-          # 从日志中提取 issue_number（匹配 "issue_number=数字" 或 "Processing Issue: #数字"）
-          ISSUE_NUMBER=$(echo "$LOGS" | grep -E 'issue_number=[0-9]+|Processing Issue: #[0-9]+' | grep -oE '[0-9]+' | head -1 || echo "")
-
-          if echo "$LOGS" | grep -q "is_duplicate=true"; then
-            echo "should_triage=false" >> $GITHUB_OUTPUT
-            echo "⚠️ Issue #$ISSUE_NUMBER 是重复的，跳过分类"
-          else
-            echo "should_triage=true" >> $GITHUB_OUTPUT
-
-            if [ -n "$ISSUE_NUMBER" ]; then
-              echo "issue_number=$ISSUE_NUMBER" >> $GITHUB_OUTPUT
-              echo "✅ Issue #$ISSUE_NUMBER 不是重复，继续分类"
-            else
-              echo "issue_number=" >> $GITHUB_OUTPUT
-              echo "⚠️ 无法从日志中获取 Issue number"
-            fi
-          fi
-
-      - name: Verify Issue number
-        if: steps.check_triage.outputs.should_triage == 'true'
-        id: get_issue
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          ISSUE_NUMBER="${{ steps.check_triage.outputs.issue_number }}"
-
-          if [ -z "$ISSUE_NUMBER" ]; then
-            echo "::error::无法获取 Issue number，跳过分类"
-            echo "issue_number=" >> $GITHUB_OUTPUT
-            exit 0
-          fi
-
-          # 验证 Issue 是否存在且为 open 状态
-          ISSUE_STATE=$(gh issue view "$ISSUE_NUMBER" --json state --jq '.state' 2>/dev/null || echo "")
-
-          if [ "$ISSUE_STATE" = "OPEN" ]; then
-            echo "issue_number=$ISSUE_NUMBER" >> $GITHUB_OUTPUT
-            echo "✅ 验证 Issue #$ISSUE_NUMBER 存在且为 open 状态"
-          else
-            echo "issue_number=" >> $GITHUB_OUTPUT
-            echo "⚠️ Issue #$ISSUE_NUMBER 不存在或已关闭 (state=$ISSUE_STATE)"
-          fi
-
       - name: Checkout repository
-        if: steps.check_triage.outputs.should_triage == 'true' && steps.get_issue.outputs.issue_number != ''
         uses: actions/checkout@v5
         with:
           fetch-depth: 1
 
       - name: Run Claude Code for Issue Triage
-        if: steps.check_triage.outputs.should_triage == 'true' && steps.get_issue.outputs.issue_number != ''
         uses: anthropics/claude-code-action@v1
         with:
-          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
-          allowed_non_write_users: "*"
           prompt: |
             Analyze this new issue and apply appropriate labels.
 
-            Issue: #${{ steps.get_issue.outputs.issue_number }}
+            Issue: #${{ github.event.issue.number }}
             Repository: ${{ github.repository }}
 
             Your task:
@@ -104,7 +37,8 @@ jobs:
 
             Apply the labels using mcp__github__update_issue.
             If the issue is unclear, add a comment asking for clarification using mcp__github__create_issue_comment.
+
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          allowed_non_write_users: "*"
           claude_args: |
-            --model claude-opus-4-5-20251101
-            --max-turns 10
             --allowedTools "mcp__github__get_issue,mcp__github__update_issue,mcp__github__create_issue_comment"
