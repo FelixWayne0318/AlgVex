@@ -121,12 +121,13 @@ jobs:
           steps.validate.outputs.valid == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
+          IS_FLAKY: ${{ steps.validate.outputs.is_flaky }}
+          CONFIDENCE: ${{ steps.validate.outputs.confidence }}
+          SUMMARY: ${{ steps.validate.outputs.summary }}
+          WORKFLOW_URL: ${{ github.event.workflow_run.html_url }}
+          HEAD_BRANCH: ${{ github.event.workflow_run.head_branch }}
         run: |
-          IS_FLAKY="${{ steps.validate.outputs.is_flaky }}"
-          CONFIDENCE="${{ steps.validate.outputs.confidence }}"
-          SUMMARY="${{ steps.validate.outputs.summary }}"
-
-          pr_number=$(gh pr list --head "${{ github.event.workflow_run.head_branch }}" --json number --jq '.[0].number')
+          pr_number=$(gh pr list --head "$HEAD_BRANCH" --json number --jq '.[0].number')
 
           if [ -n "$pr_number" ]; then
             if [ "$IS_FLAKY" = "true" ]; then
@@ -139,20 +140,20 @@ jobs:
 
             gh pr comment "$pr_number" --body "## $TITLE
 
-          **Analysis**: $SUMMARY
-          **Confidence**: $CONFIDENCE
+**Analysis**: $SUMMARY
+**Confidence**: $CONFIDENCE
 
-          $ACTION
+$ACTION
 
-          [View workflow run](${{ github.event.workflow_run.html_url }})"
+[View workflow run]($WORKFLOW_URL)"
           fi
 
       - name: Set analysis result
         id: set_result
         if: steps.validate.outputs.valid == 'true'
+        env:
+          IS_FLAKY: ${{ steps.validate.outputs.is_flaky }}
         run: |
-          IS_FLAKY="${{ steps.validate.outputs.is_flaky }}"
-
           # 只有当不是 flaky test 时才应该自动修复
           if [ "$IS_FLAKY" == "false" ]; then
             echo "should_auto_fix=true" >> $GITHUB_OUTPUT
