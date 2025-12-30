@@ -4,17 +4,15 @@ AI-powered quantitative investment research platform powered by Claude Code and 
 
 ## 📚 文档
 
-- [工作流使用指南](docs/WORKFLOW.md) - Claude Code 基础工作流程
-- [完整工作流指南](docs/WORKFLOWS-GUIDE.md) - 8个工作流模块详细说明
+- [工作流指南](docs/WORKFLOWS-GUIDE.md) - 8 个工作流模块详细说明
   - Claude 交互式响应
   - PR 自动审查
   - Issue 自动分类
   - Issue 重复检测
   - CI 持续集成
   - CI 失败自动修复
-  - 测试失败分析
+  - Flaky 测试检测
   - 手动代码分析
-  - **新增**: Qlib 集成说明
 
 ## 🤖 GitHub Actions 工作流
 
@@ -52,7 +50,7 @@ chmod +x scripts/setup-qlib.sh
 ./scripts/setup-qlib.sh v0.9.6
 ```
 
-更多集成方式和使用说明，请查看 [Qlib 集成说明](docs/WORKFLOWS-GUIDE.md#qlib-集成说明)
+更多信息请访问 [Qlib 官方文档](https://qlib.readthedocs.io/)
 
 ## 🐝 Hummingbot 集成
 
@@ -88,7 +86,7 @@ chmod +x scripts/setup-hummingbot.sh
 @claude 这段代码有什么问题？
 ```
 
-详细使用方法请查看 [工作流使用指南](docs/WORKFLOW.md)
+详细使用方法请查看 [工作流指南](docs/WORKFLOWS-GUIDE.md)
 
 ## 🔐 配置 GitHub Secrets
 
