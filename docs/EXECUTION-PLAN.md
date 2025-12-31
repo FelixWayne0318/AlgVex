@@ -1,6 +1,6 @@
 # AlgVex 执行方案
 
-> **版本**: 4.2
+> **版本**: 4.3
 > **日期**: 2025-12-31
 > **目标**: 基于 Qlib v0.9.7 + Hummingbot v2.11.0 构建加密货币量化交易系统
 
@@ -888,6 +888,187 @@ volumes:
   emqx_data:
 ```
 
+### 5.4 数据质量规范
+
+> 用"严格 UTC + open_time 对齐 + 可重复构建"的规则，彻底消除最难排查的时间错位/缺K/重复K问题
+
+#### 5.4.1 核心硬规则（必须遵守）
+
+| 规则 | 要求 | 说明 |
+|------|------|------|
+| **R0.1 全链路 UTC** | 所有时间戳必须是 UTC tz-aware | 禁止 `pd.Timestamp.now()` / `datetime.now()` 无时区 |
+| **R0.2 open_time 锚点** | K 线时间戳以交易所 open_time 为准 | 不允许 date_range 覆盖真实锚点 |
+| **R0.3 增量幂等** | 同一 instrument + open_time 必须 upsert | 重复拉取不产生重复K |
+
+#### 5.4.2 字段标准
+
+**K 线字段（从交易所映射）**:
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| open_time | int64 (ms) | UTC 时间戳，**唯一锚点** |
+| close_time | int64 (ms) | 可选，用于一致性校验 |
+| open, high, low, close | float64 | OHLC |
+| volume | float64 | 成交量 |
+| quote_volume (amount) | float64 | 成交额 |
+
+**内部规范 DataFrame（进入 Qlib 前）**:
+
+| 字段 | 类型 | 约束 |
+|------|------|------|
+| datetime | Timestamp (UTC) | 递增、唯一、对齐 open_time |
+| instrument | str | 如 "BTC-USDT" |
+| open, high, low, close, volume, amount | float64 | OHLC + 量额 |
+
+#### 5.4.3 UTC 对齐规范
+
+**唯一合法的时间戳转换方式**:
+
+```python
+# ✅ 正确
+dt = pd.Timestamp(open_time_ms, unit="ms", tz="UTC")
+
+# ❌ 禁止
+pd.Timestamp(open_time_ms, unit="ms")           # 无 tz
+pd.to_datetime(open_time_ms, unit="ms")         # 默认无 tz
+datetime.fromtimestamp(open_time_ms/1000)       # 本地时区
+```
+
+**对齐校验（必须做）**:
+
+| 频率 | 校验条件 |
+|------|----------|
+| 1h | `dt.minute == 0 and dt.second == 0` |
+| 15m | `dt.minute % 15 == 0` |
+| 5m | `dt.minute % 5 == 0` |
+| 1m | `dt.second == 0` |
+
+如果不满足 → 判定数据源/解析错误（常见于时区错位或用了 close_time）
+
+**区间闭合性（统一左闭右开）**:
+
+```
+[start, end)
+- startTime = start_open_time
+- endTime = end_open_time（不包含 end 那根）
+```
+
+#### 5.4.4 增量更新规范
+
+**水位线 (Watermark)**:
+
+对每个 instrument 维护：
+- `last_open_time_ms` (UTC ms)
+- 存储：SQLite / JSON / Redis KV
+- 只在"成功写入并通过校验"后推进
+
+**回看窗口 (Lookback)**:
+
+| 频率 | 建议回看 | 原因 |
+|------|----------|------|
+| 1h | 3-6 根 (3-6h) | 末端未收敛K |
+| 1m | 120-300 根 (2-5h) | 重算/回补 |
+
+```python
+lookback_ms = max(3 * freq_ms, 2 * 3600 * 1000)
+next_start = last_open_time_ms - lookback_ms
+next_end = now_floor_to_freq_ms  # 已完成K的末端
+```
+
+**写入必须 Upsert/去重**:
+
+```python
+# 1. 拉取 df_new（可能含历史重叠）
+# 2. 强制转换 UTC + 对齐校验
+# 3. 以 (instrument, open_time_ms) 去重，保留最新
+# 4. 排序后写入
+# 5. 校验通过后更新 watermark
+```
+
+#### 5.4.5 缺口校验规范（建议实现）
+
+**校验分层**:
+
+| Level | 校验内容 | 建议 |
+|-------|----------|------|
+| L1 (轻量) | 预期日历 vs 实际数据缺口数量 | **默认开启** |
+| L2 (中等) | + 重复K + OHLC 一致性 | 推荐 |
+| L3 (重) | + 自动重拉缺口段 | 可选 |
+
+**缺口阈值（1h 线一年约 8760 根）**:
+
+| 阈值 | 处理 |
+|------|------|
+| <= 0.01% (<=1根) | 允许 |
+| > 0.01% | 标记失败，自动重拉 3 次 |
+| 仍失败 | **阻断训练/交易** |
+
+#### 5.4.6 Qlib 对接契约
+
+**必须保证**:
+- calendar (UTC) 与 features 索引一致
+- instruments 列表与 features 目录一致
+- freq 全链路一致
+
+**必须写进代码断言**:
+
+```python
+# 1. tz-aware
+assert df.datetime.dt.tz is not None and str(df.datetime.dt.tz) == "UTC"
+
+# 2. anchor
+assert all(df.datetime == pd.to_datetime(df.open_time, unit="ms", utc=True))
+
+# 3. alignment (1h)
+assert all(df.datetime.dt.minute == 0)
+
+# 4. unique
+assert df.datetime.is_unique
+
+# 5. monotonic
+assert df.datetime.is_monotonic_increasing
+
+# 6. OHLC sanity
+assert all(df.high >= df[["open", "close"]].max(axis=1))
+assert all(df.low <= df[["open", "close"]].min(axis=1))
+assert all(df.volume >= 0)
+```
+
+#### 5.4.7 实施建议
+
+**两层文件架构**:
+
+```
+data/
+├── raw/                    # A) 真值表 (Parquet，带 open_time_ms)
+│   └── crypto_1h_*.parquet
+└── qlib_data/              # B) Qlib 格式 (由构建器生成，可重复构建)
+    ├── calendars/
+    ├── instruments/
+    └── features/
+```
+
+**增量策略**:
+- 增量只更新 raw layer
+- qlib layer 定时重建最近 N 天窗口（如每小时 cron）
+- 不要每次增量都手工写 bin
+
+**关键原则**:
+- 所有校验失败都必须阻断训练/交易
+- 数据是地基，宁可停机也不要用错位/缺口数据
+
+#### 5.4.8 默认配置
+
+| 配置项 | 默认值 |
+|--------|--------|
+| time_zone | UTC (固定) |
+| interval | 1h (试运行期) |
+| lookback | 6h |
+| gap_threshold_pct | 0.01% |
+| max_gap_allowed | 1 (1h 线一年) |
+| retry_gap_refetch | 3 |
+| on_gap_fail | STOP_PIPELINE |
+
 ---
 
 ## 六、实施阶段
@@ -1438,10 +1619,11 @@ docker-compose exec execution bash
 
 ---
 
-**文档版本**: 4.2 (MQTT 消息层)
+**文档版本**: 4.3 (数据质量规范)
 **创建日期**: 2025-12-31
 **更新日期**: 2025-12-31
 **更新历史**:
+- v4.3: 添加数据质量规范 (5.4) - UTC对齐、open_time锚点、增量幂等、缺口校验、Qlib对接契约
 - v4.2: 消息层改为 MQTT (EMQX) - 与 Hummingbot 生态对齐，paho-mqtt 替代 redis，EMQX Dashboard 可观测性
 - v4.1: 增强实施参考 - 添加源码路径参考表、细化阶段子任务、扩展适配器类规格、添加故障排查指南
 - v4.0: 架构重构 - 双容器分离、官方数据转换、生产级信号桥、能力矩阵、风险偏差声明
