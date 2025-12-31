@@ -8,13 +8,14 @@
 
 ### 1.1 完整模型列表 (qlib.contrib.model)
 
-基于本地代码审查，Qlib v0.9.7 共有 **30 个模型类**：
+基于本地代码审查，Qlib v0.9.7 共有 **31 个模型类**：
 
-#### 传统机器学习 (4)
+#### 传统机器学习 (5)
 | 模型 | 文件 | 说明 | 适配策略 |
 |------|------|------|----------|
 | LinearModel | linear.py | 线性回归 (OLS/Ridge/Lasso) | 🟢 无需修改 |
 | LGBModel | gbdt.py | LightGBM | 🟢 无需修改 |
+| HFLGBModel | highfreq_gdbt_model.py | 高频 LightGBM | 🟢 无需修改 |
 | XGBModel | xgboost.py | XGBoost | 🟢 无需修改 |
 | CatBoostModel | catboost_model.py | CatBoost | 🟢 无需修改 |
 
@@ -694,7 +695,7 @@ plotly>=5.18.0     # 新增
 
 | 类别 | 实际数量 | 覆盖率 |
 |------|----------|--------|
-| 模型 | 30 | 100% |
+| 模型 | 31 | 100% |
 | 策略 | 7+ | 100% |
 | 表达式操作符 | 52 | 100% |
 | Alpha158 因子 | 158 | 100% |
