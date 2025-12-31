@@ -1,0 +1,6 @@
+[submodule "libs/qlib"]
+	path = libs/qlib
+	url = https://github.com/microsoft/qlib.git
+[submodule "libs/hummingbot"]
+	path = libs/hummingbot
+	url = https://github.com/hummingbot/hummingbot.git
