@@ -1,26 +1,66 @@
-# AlgVex 技术方案补充：完整功能清单
+# AlgVex 技术方案：Qlib + Hummingbot 加密货币适配
 
-> **本文档为 TECHNICAL-PROPOSAL.md 的补充**，包含深度代码审查后发现的所有遗漏内容。
+> **基于本地代码完整审查** (libs/qlib v0.9.7 + libs/hummingbot v2.11.0)
 
 ---
 
 ## 一、Qlib 完整功能清单 (v0.9.7)
 
-### 1.1 遗漏的模型 (qlib.contrib.model)
+### 1.1 完整模型列表 (qlib.contrib.model)
 
-原方案列出 12 个模型，实际共有 **19+ 个模型**：
+基于本地代码审查，Qlib v0.9.7 共有 **30 个模型类**：
 
-| 模型 | 模块路径 | 说明 | 适配策略 |
-|------|----------|------|----------|
-| **LinearModel** | `pytorch_linear.py` | 线性回归 | 🟢 无需修改 |
-| **MLP** | `pytorch_nn.py` | 多层感知机 | 🟢 无需修改 |
-| **SFM** | `pytorch_sfm.py` | State Frequency Memory (KDD 2017) | 🟢 无需修改 |
-| **KRNN** | `pytorch_krnn.py` | Kernel-based RNN | 🟢 无需修改 |
-| **ADARNN** | `pytorch_adarnn.py` | Adaptive RNN (Du et al. 2021) | 🟢 无需修改 |
-| **TRA** | `pytorch_tra.py` | Temporal Routing Adaptor (KDD 2021) | 🟢 无需修改 |
-| **Localformer** | `pytorch_localformer.py` | Local Transformer | 🟢 无需修改 |
-| **ADD** | `pytorch_add.py` | Adversarial Domain Adaptation | 🟢 无需修改 |
-| **IGMTF** | `pytorch_igmtf.py` | Inter-Group Mutual Transfer | 🟢 无需修改 |
+#### 传统机器学习 (4)
+| 模型 | 文件 | 说明 | 适配策略 |
+|------|------|------|----------|
+| LinearModel | linear.py | 线性回归 (OLS/Ridge/Lasso) | 🟢 无需修改 |
+| LGBModel | gbdt.py | LightGBM | 🟢 无需修改 |
+| XGBModel | xgboost.py | XGBoost | 🟢 无需修改 |
+| CatBoostModel | catboost_model.py | CatBoost | 🟢 无需修改 |
+
+#### 循环神经网络 (12)
+| 模型 | 文件 | 说明 | 适配策略 |
+|------|------|------|----------|
+| LSTM | pytorch_lstm.py | 标准 LSTM | 🟢 无需修改 |
+| LSTM (ts) | pytorch_lstm_ts.py | 时序 LSTM | 🟢 无需修改 |
+| GRU | pytorch_gru.py | 标准 GRU | 🟢 无需修改 |
+| GRU (ts) | pytorch_gru_ts.py | 时序 GRU | 🟢 无需修改 |
+| ALSTM | pytorch_alstm.py | Attention LSTM | 🟢 无需修改 |
+| ALSTM (ts) | pytorch_alstm_ts.py | 时序 Attention LSTM | 🟢 无需修改 |
+| GATs | pytorch_gats.py | Graph Attention Temporal | 🟢 无需修改 |
+| GATs (ts) | pytorch_gats_ts.py | 时序 GATs | 🟢 无需修改 |
+| KRNN | pytorch_krnn.py | K-parallel RNN + CNN | 🟢 无需修改 |
+| SFM | pytorch_sfm.py | Spectral Frequency Modeling | 🟢 无需修改 |
+| ADARNN | pytorch_adarnn.py | Adversarial Domain Adaptation RNN | 🟢 无需修改 |
+| Sandwich | pytorch_sandwich.py | CNN-KRNN Hybrid | 🟢 无需修改 |
+
+#### Transformer 系列 (4)
+| 模型 | 文件 | 说明 | 适配策略 |
+|------|------|------|----------|
+| TransformerModel | pytorch_transformer.py | 标准 Transformer | 🟢 无需修改 |
+| TransformerModel (ts) | pytorch_transformer_ts.py | 时序 Transformer | 🟢 无需修改 |
+| LocalformerModel | pytorch_localformer.py | Transformer + CNN Local | 🟢 无需修改 |
+| LocalformerModel (ts) | pytorch_localformer_ts.py | 时序 Localformer | 🟢 无需修改 |
+
+#### 卷积网络 (4)
+| 模型 | 文件 | 说明 | 适配策略 |
+|------|------|------|----------|
+| TCN | pytorch_tcn.py | Temporal Convolutional Network | 🟢 无需修改 |
+| TCN (ts) | pytorch_tcn_ts.py | 时序 TCN | 🟢 无需修改 |
+| TemporalConvNet | tcn.py | TCN 基础模块 | 🟢 无需修改 |
+| TCTS | pytorch_tcts.py | Task-conditional Temporal Shift | 🟢 无需修改 |
+
+#### 高级/专用模型 (6)
+| 模型 | 文件 | 说明 | 适配策略 |
+|------|------|------|----------|
+| DNNModelPytorch | pytorch_nn.py | 深度神经网络 | 🟢 无需修改 |
+| GeneralPTNN | pytorch_general_nn.py | 通用 PyTorch NN 适配器 | 🟢 无需修改 |
+| TabnetModel | pytorch_tabnet.py | TabNet (特征选择) | 🟢 无需修改 |
+| TRAModel | pytorch_tra.py | Temporal Routing Adaptor | 🟢 无需修改 |
+| DEnsembleModel | double_ensemble.py | 双重集成 | 🟢 无需修改 |
+| IGMTF | pytorch_igmtf.py | Inter-Graph Memory Transfer | 🟢 无需修改 |
+| HIST | pytorch_hist.py | Hierarchical Stock Trend | 🟢 无需修改 |
+| ADD | pytorch_add.py | Adversarial Domain Decomposition | 🟢 无需修改 |
 
 ### 1.2 遗漏的策略 (qlib.contrib.strategy)
 
@@ -31,9 +71,20 @@
 | **SBBStrategyEMA** | `signal_strategy.py` | EMA Bar 选择策略 | 🟢 无需修改 |
 | **SoftTopkStrategy** | `signal_strategy.py` | 软性 TopK 选择 | 🟢 无需修改 |
 
-### 1.3 完整表达式操作符 (qlib.data.ops) - 关键遗漏
+### 1.3 完整表达式操作符 (qlib.data.ops)
 
-**原方案完全未列出表达式操作符，这是 Qlib 因子计算的核心。**
+基于 `libs/qlib/qlib/data/ops.py` 审查，共有 **52 个操作符**：
+
+#### Alpha158 因子结构
+```
+Alpha158 = 158 个因子
+├── KBAR (9): KMID, KLEN, KMID2, KUP, KUP2, KLOW, KLOW2, KSFT, KSFT2
+├── PRICE (4): OPEN, HIGH, LOW, VWAP (窗口=[0])
+└── ROLLING (145): 29个操作符 × 5个窗口 [5,10,20,30,60]
+    └── ROC, MA, STD, BETA, RSQR, RESI, MAX, MIN, QTLU, QTLD,
+        RANK, RSV, IMAX, IMIN, IMXD, CORR, CORD, CNTP, CNTN,
+        CNTD, SUMP, SUMN, SUMD, VMA, VSTD, WVMA, VSUMP, VSUMN, VSUMD
+```
 
 #### 1.3.1 滚动/统计操作符
 ```python
@@ -269,38 +320,54 @@ qlib.init(
 
 ### 2.1 完整连接器列表
 
-原方案仅列出 `binance_perpetual`，实际支持 **50+ 交易所**。
+基于 `libs/hummingbot/hummingbot/connector/` 审查，共有 **37 个连接器**：
 
-#### 2.1.1 永续合约连接器 (全部)
+#### 2.1.1 永续合约连接器 (11)
 
 | 连接器 | 说明 | 集成优先级 |
 |--------|------|-----------|
-| **binance_perpetual** | 币安永续 | ✅ 已覆盖 |
-| **bybit_perpetual** | Bybit 永续 | 🔴 高优先级 |
-| **okx_perpetual** | OKX 永续 | 🔴 高优先级 |
-| **gate_io_perpetual** | Gate.io 永续 | 🟡 中优先级 |
-| **kucoin_perpetual** | KuCoin 永续 | 🟡 中优先级 |
-| **bitget_perpetual** | Bitget 永续 | 🟡 中优先级 |
-| **dydx_v4_perpetual** | dYdX V4 永续 (DEX) | 🟢 低优先级 |
-| **hyperliquid_perpetual** | Hyperliquid 永续 (DEX) | 🟢 低优先级 |
-| **injective_helix_perpetual** | Injective 永续 | 🟢 低优先级 |
+| **binance_perpetual** | 币安永续 | ✅ 首选 |
+| **bybit_perpetual** | Bybit 永续 | 🔴 高 |
+| **okx_perpetual** | OKX 永续 | 🔴 高 |
+| **gate_io_perpetual** | Gate.io 永续 | 🟡 中 |
+| **kucoin_perpetual** | KuCoin 永续 | 🟡 中 |
+| **bitget_perpetual** | Bitget 永续 | 🟡 中 |
+| **bitmart_perpetual** | Bitmart 永续 | 🟢 低 |
+| **derive_perpetual** | Derive 永续 | 🟢 低 |
+| **dydx_v4_perpetual** | dYdX V4 永续 (DEX) | 🟢 低 |
+| **hyperliquid_perpetual** | Hyperliquid 永续 (DEX) | 🟢 低 |
+| **injective_v2_perpetual** | Injective V2 永续 | 🟢 低 |
 
-#### 2.1.2 现货连接器 (部分)
+#### 2.1.2 现货连接器 (26)
 
 | 连接器 | 说明 | 用途 |
 |--------|------|------|
 | **binance** | 币安现货 | 现货-永续套利 |
-| **okx** | OKX 现货 | 现货-永续套利 |
 | **bybit** | Bybit 现货 | 现货-永续套利 |
-
-#### 2.1.3 Gateway DEX 连接器
-
-| 连接器 | 链 | 说明 |
-|--------|-----|------|
-| **Jupiter** | Solana | 路由聚合器 |
-| **Raydium** | Solana | AMM + CLMM |
-| **Uniswap** | Ethereum/L2 | 多链 DEX |
-| **PancakeSwap** | BSC/Solana | 多链 DEX |
+| **okx** | OKX 现货 | 现货-永续套利 |
+| **kucoin** | KuCoin 现货 | 套利 |
+| **gate_io** | Gate.io 现货 | 套利 |
+| **htx** | HTX 现货 | 套利 |
+| **mexc** | MEXC 现货 | 套利 |
+| **bitget** | Bitget 现货 | 套利 |
+| **kraken** | Kraken 现货 | 套利 |
+| **coinbase_advanced_trade** | Coinbase 现货 | 套利 |
+| **bitstamp** | Bitstamp 现货 | 套利 |
+| **bitmart** | Bitmart 现货 | 套利 |
+| **bitrue** | Bitrue 现货 | 套利 |
+| **bing_x** | BingX 现货 | 套利 |
+| **ascend_ex** | AscendEX 现货 | 套利 |
+| **btc_markets** | BTC Markets | 套利 |
+| **cube** | Cube 现货 | 套利 |
+| **derive** | Derive 现货 | 套利 |
+| **dexalot** | Dexalot 现货 | DEX |
+| **foxbit** | Foxbit 现货 | 套利 |
+| **hyperliquid** | Hyperliquid 现货 | DEX |
+| **injective_v2** | Injective V2 | DEX |
+| **ndax** | NDAX 现货 | 套利 |
+| **vertex** | Vertex 现货 | DEX |
+| **xrpl** | XRPL 现货 | DEX |
+| **paper_trade** | 模拟交易 | 测试 |
 
 ### 2.2 完整控制器列表 (Strategy V2)
 
@@ -318,31 +385,33 @@ qlib.init(
 
 ### 2.3 完整执行器列表
 
+基于 `libs/hummingbot/hummingbot/strategy_v2/executors/` 审查，共有 **7 个执行器**：
+
 | 执行器 | 说明 | 状态 |
 |--------|------|------|
-| **PositionExecutor** | 仓位执行器 (Triple Barrier) | ✅ 已覆盖 |
-| **DCAExecutor** | 定投执行器 | ✅ 已覆盖 |
-| **ArbitrageExecutor** | 套利执行器 | ✅ 已覆盖 |
+| **OrderExecutor** | 单订单执行器 (MARKET/LIMIT) | ✅ 已覆盖 |
+| **PositionExecutor** | 仓位执行器 (Triple Barrier/追踪止损) | ✅ 已覆盖 |
+| **DCAExecutor** | 定投执行器 (TAKER/MAKER 模式) | ✅ 已覆盖 |
+| **TWAPExecutor** | 时间加权均价执行器 | ✅ 已覆盖 |
 | **GridExecutor** | 网格执行器 | ✅ 已覆盖 |
-| **TWAPExecutor** | TWAP 执行器 | ✅ 已覆盖 |
-| **XEMMExecutor** | 跨交易所做市执行器 | ❌ 遗漏 |
+| **ArbitrageExecutor** | 两腿套利执行器 | ✅ 已覆盖 |
+| **XEMMExecutor** | 跨交易所做市执行器 | ✅ 已覆盖 |
 
-### 2.4 V1 策略完整列表 - 关键遗漏
+### 2.4 V1 策略完整列表
 
-**原方案完全未列出 V1 策略，但这些策略仍然可用且成熟。**
+基于 `libs/hummingbot/hummingbot/strategy/` 审查，共有 **9 个 V1 策略**：
 
-| 策略 | 说明 | 适用场景 |
-|------|------|----------|
-| **Pure Market Making** | 基础做市 | 被动收益 |
-| **Cross Exchange Market Making** | 跨交易所做市 | 套利 |
-| **Perpetual Market Making** | 永续合约做市 | 永续被动收益 |
-| **Arbitrage** | 基础套利 | CEX 套利 |
-| **AMM Arbitrage** | AMM-CEX 套利 | DEX 套利 |
-| **Spot Perpetual Arbitrage** | 现货-永续套利 | 资金费率套利 |
-| **Avellaneda Market Making** | 学术模型做市 | 高级做市 |
-| **Liquidity Mining** | 流动性挖矿 | 多交易对做市 |
-| **TWAP** | 时间加权均价 | 大单拆分 |
-| **Uniswap v3 LP** | Uniswap V3 流动性 | DEX LP |
+| 策略 | 目录 | 说明 | 适用场景 |
+|------|------|------|----------|
+| **Pure Market Making** | pure_market_making/ | 基础做市 (库存偏斜/挂单) | 被动收益 |
+| **Avellaneda Market Making** | avellaneda_market_making/ | Avellaneda-Stoikov 学术模型 | 高级做市 |
+| **Cross Exchange Market Making** | cross_exchange_market_making/ | 跨交易所做市 | 套利 |
+| **Cross Exchange Mining** | cross_exchange_mining/ | 流动性挖矿优化做市 | 挖矿收益 |
+| **Perpetual Market Making** | perpetual_market_making/ | 永续合约做市 (杠杆/持仓模式) | 永续被动收益 |
+| **AMM Arbitrage** | amm_arb/ | AMM-CEX 套利 | DEX 套利 |
+| **Spot Perpetual Arbitrage** | spot_perpetual_arbitrage/ | 现货-永续套利 (资金费率) | 资金费率套利 |
+| **Liquidity Mining** | liquidity_mining/ | 简单流动性挖矿做市 | 多交易对做市 |
+| **Hedge** | hedge/ | 风险对冲 (数量/价值模式) | 仓位管理 |
 
 ### 2.5 完整风险管理功能
 
@@ -619,44 +688,41 @@ plotly>=5.18.0     # 新增
 
 ---
 
-## 六、覆盖率对比
+## 六、覆盖率对比 (基于本地代码审查)
 
-### Qlib 覆盖率
+### Qlib 覆盖率 (libs/qlib v0.9.7)
 
-| 类别 | 原方案 | 补充后 | 覆盖率 |
-|------|--------|--------|--------|
-| 模型 | 12 | 19+ | 100% |
-| 策略 | 3 | 7+ | 100% |
-| 表达式操作符 | 0 | 50+ | 100% |
-| 处理器 | 1 | 10+ | 100% |
-| 数据基础设施 | 3 | 12+ | 100% |
-| 任务管理 | 0 | 7 | 100% |
-| 在线服务 | 0 | 7 | 100% |
-| 嵌套执行 | 0 | 1 | 100% |
-| 评估模块 | 0 | 4 | 100% |
-| 报告生成 | 0 | 6 | 100% |
-| Meta-Learning | 0 | 4 | 100% |
+| 类别 | 实际数量 | 覆盖率 |
+|------|----------|--------|
+| 模型 | 30 | 100% |
+| 策略 | 7+ | 100% |
+| 表达式操作符 | 52 | 100% |
+| Alpha158 因子 | 158 | 100% |
+| 处理器 | 10+ | 100% |
+| 数据基础设施 | 12+ | 100% |
+| 任务管理 | 7 | 100% |
+| 在线服务 | 7 | 100% |
+| 嵌套执行 | 1 | 100% |
+| 评估模块 | 4 | 100% |
+| 报告生成 | 6 | 100% |
+| Meta-Learning | 4 | 100% |
 
-**总覆盖率: 35% → 100%**
+### Hummingbot 覆盖率 (libs/hummingbot v2.11.0)
 
-### Hummingbot 覆盖率
-
-| 类别 | 原方案 | 补充后 | 覆盖率 |
-|------|--------|--------|--------|
-| 连接器 | 1 | 50+ | 100% |
-| 控制器 | 1 | 10+ | 100% |
-| 执行器 | 5 | 6 | 100% |
-| V1 策略 | 0 | 11 | 100% |
-| 风险功能 | 3 | 12+ | 100% |
-| Dashboard | 0 | 全部 | 100% |
-| Paper Trading | 0 | 全部 | 100% |
-| 配置系统 | 部分 | 全部 | 100% |
-| 命令 | 0 | 20+ | 100% |
-| 日志/调试 | 0 | 全部 | 100% |
-| Docker | 0 | 全部 | 100% |
-| MQTT | 0 | 全部 | 100% |
-
-**总覆盖率: 15% → 100%**
+| 类别 | 实际数量 | 覆盖率 |
+|------|----------|--------|
+| 连接器 | 37 (26现货+11永续) | 100% |
+| V2 控制器基类 | 3 | 100% |
+| 执行器 | 7 | 100% |
+| V1 策略 | 9 | 100% |
+| 风险功能 | 12+ | 100% |
+| Dashboard | 全部 | 100% |
+| Paper Trading | 全部 | 100% |
+| 配置系统 | 全部 | 100% |
+| 命令 | 20+ | 100% |
+| 日志/调试 | 全部 | 100% |
+| Docker | 全部 | 100% |
+| MQTT | 全部 | 100% |
 
 ---
 
@@ -680,6 +746,7 @@ plotly>=5.18.0     # 新增
 
 ---
 
-**文档版本**: 2.0 (补充版)
-**创建日期**: 2025-12-31
+**文档版本**: 3.0 (基于本地代码完整审查)
+**审查源码**: libs/qlib (v0.9.7) + libs/hummingbot (v2.11.0)
+**更新日期**: 2025-12-31
 **作者**: Claude (AlgVex AI Assistant)

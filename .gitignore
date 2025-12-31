@@ -211,3 +211,4 @@ __marimo__/
 # Users should clone them locally using scripts/setup-qlib.sh and scripts/setup-hummingbot.sh
 qlib/
 hummingbot/
+libs/
