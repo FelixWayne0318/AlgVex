@@ -78,130 +78,179 @@
 
 ## 三、功能清单
 
+> **适配策略图例**: 🟢 无需修改 | 🟡 需验证/微调 | 🔴 需实现适配层
+
 ### 3.1 Qlib 功能清单 (libs/qlib v0.9.7)
 
-#### 3.1.1 模型 (32个)
+#### 3.1.1 模型 (32个) - 全部 🟢 无需修改
 
-| 类别 | 数量 | 模型 | 文件 |
-|------|------|------|------|
-| 传统ML | 5 | LinearModel, LGBModel, HFLGBModel, XGBModel, CatBoostModel | linear.py, gbdt.py, highfreq_gdbt_model.py, xgboost.py, catboost_model.py |
-| RNN | 12 | LSTM, LSTM_ts, GRU, GRU_ts, ALSTM, ALSTM_ts, GATs, GATs_ts, KRNN, SFM, ADARNN, Sandwich | pytorch_lstm*.py, pytorch_gru*.py, pytorch_alstm*.py, pytorch_gats*.py, pytorch_krnn.py, pytorch_sfm.py, pytorch_adarnn.py, pytorch_sandwich.py |
-| Transformer | 4 | TransformerModel, TransformerModel_ts, LocalformerModel, LocalformerModel_ts | pytorch_transformer.py, pytorch_transformer_ts.py, pytorch_localformer.py, pytorch_localformer_ts.py |
-| CNN | 3 | TCN, TCN_ts, TCTS | pytorch_tcn.py, pytorch_tcn_ts.py, pytorch_tcts.py |
-| 高级 | 8 | DNNModelPytorch, GeneralPTNN, TabnetModel, TRAModel, DEnsembleModel, IGMTF, HIST, ADD | pytorch_nn.py, pytorch_general_nn.py, pytorch_tabnet.py, pytorch_tra.py, double_ensemble.py, pytorch_igmtf.py, pytorch_hist.py, pytorch_add.py |
+| 类别 | 数量 | 模型 | 源码路径 |
+|------|------|------|----------|
+| 传统ML | 5 | LinearModel, LGBModel, HFLGBModel, XGBModel, CatBoostModel | `qlib/contrib/model/{linear,gbdt,highfreq_gdbt_model,xgboost,catboost_model}.py` |
+| RNN | 12 | LSTM, LSTM_ts, GRU, GRU_ts, ALSTM, ALSTM_ts, GATs, GATs_ts, KRNN, SFM, ADARNN, Sandwich | `qlib/contrib/model/pytorch_*.py` |
+| Transformer | 4 | TransformerModel, TransformerModel_ts, LocalformerModel, LocalformerModel_ts | `qlib/contrib/model/pytorch_{transformer,localformer}*.py` |
+| CNN | 3 | TCN, TCN_ts, TCTS | `qlib/contrib/model/pytorch_tc*.py` |
+| 高级 | 8 | DNNModelPytorch, GeneralPTNN, TabnetModel, TRAModel, DEnsembleModel, IGMTF, HIST, ADD | `qlib/contrib/model/pytorch_{nn,general_nn,tabnet,tra,igmtf,hist,add}.py`, `double_ensemble.py` |
 
-> **注**: tcn.py 包含 TemporalBlock 构建块，被 TCN/TCN_ts 模型使用，不是独立模型。
+> **注**: 所有模型接受标准化输入，无需修改。仅需确保数据层提供正确格式。
 
 #### 3.1.2 操作符 (52个)
 
-| 类别 | 操作符 |
-|------|--------|
-| 统计 (14) | Sum, Mean, Std, Var, Skew, Kurt, Med, Mad, Slope, Rsquare, Resi, Rank, Quantile, Count |
-| 极值 (4) | Max, Min, IdxMax, IdxMin |
-| 技术 (6) | EMA, WMA, Corr, Cov, Delta, Ref |
-| 数学 (8) | Abs, Sign, Log, Power, Add, Sub, Mul, Div |
-| 逻辑 (13) | Greater, Less, Gt, Ge, Lt, Le, Eq, Ne, And, Or, Not, If, Mask |
-| 高频 (4) | DayCumsum, DayLast, get_calendar_day, get_calendar_minute |
-| 其他 (3) | ChangeInstrument, TResample, NpElemOperator |
+| 类别 | 操作符 | 适配 |
+|------|--------|------|
+| 统计 (14) | Sum, Mean, Std, Var, Skew, Kurt, Med, Mad, Slope, Rsquare, Resi, Rank, Quantile, Count | 🟢 |
+| 极值 (4) | Max, Min, IdxMax, IdxMin | 🟢 |
+| 技术 (6) | EMA, WMA, Corr, Cov, Delta, Ref | 🟢 |
+| 数学 (8) | Abs, Sign, Log, Power, Add, Sub, Mul, Div | 🟢 |
+| 逻辑 (13) | Greater, Less, Gt, Ge, Lt, Le, Eq, Ne, And, Or, Not, If, Mask | 🟢 |
+| 高频 (4) | DayCumsum, DayLast, get_calendar_day, get_calendar_minute | 🔴 需适配 24/7 日历 |
+| 其他 (3) | ChangeInstrument, TResample, NpElemOperator | 🟢 |
 
-#### 3.1.3 其他模块
+> **源码**: `qlib/data/ops.py`, `qlib/contrib/ops/high_freq.py`
 
-| 模块 | 组件 |
-|------|------|
-| 数据处理器 | DropnaProcessor, TanhProcess, ZscoreNorm, CSRankNorm 等 10+ |
-| 策略 | BaseSignalStrategy, SBBStrategyEMA, SoftTopkStrategy, EnhancedIndexingOptimizer |
-| 回测 | SimulatorExecutor, NestedExecutor (支持 VWAP/TWAP 价格计算) |
-| 风险模型 | POETCovEstimator, ShrinkCovEstimator, StructuredCovEstimator |
-| 集成学习 | RollingEnsemble, AverageEnsemble, RollingGroup |
-| 调优器 | Tuner, TunerPipeline, SearchSpace |
-| 在线服务 | OnlineManager, RollingGen, PredUpdater |
-| 任务管理 | TaskManager, Trainer, TrainerR, Collector |
+#### 3.1.3 数据基础设施
 
-#### 3.1.4 RL 模块 (可选)
+| 组件 | 说明 | 适配 | 源码路径 |
+|------|------|------|----------|
+| CalendarProvider | 日历提供者基类 | 🔴 需实现 CryptoCalendarProvider | `qlib/data/data.py` |
+| InstrumentProvider | 标的提供者基类 | 🔴 需实现 CryptoInstrumentProvider | `qlib/data/data.py` |
+| Alpha158/Alpha360 | 因子处理器 | 🟡 需适配窗口参数 | `qlib/contrib/data/handler.py` |
+| 数据处理器 (10+) | DropnaProcessor, ZscoreNorm, CSRankNorm 等 | 🟢 | `qlib/contrib/data/processor.py` |
 
-| 组件 | 说明 | 状态 |
+#### 3.1.4 回测与执行
+
+| 组件 | 说明 | 适配 | 源码路径 |
+|------|------|------|----------|
+| Exchange | 交易所模拟基类 | 🔴 需实现 CryptoExchange | `qlib/backtest/exchange.py` |
+| SimulatorExecutor | 基础模拟执行器 | 🟡 需适配永续合约规则 | `qlib/backtest/executor.py` |
+| NestedExecutor | 嵌套多时间尺度执行 | 🟡 需适配 | `qlib/backtest/executor.py` |
+| Position | 持仓管理 | 🔴 需实现 PerpetualPosition | `qlib/backtest/position.py` |
+
+#### 3.1.5 工作流与在线服务
+
+| 组件 | 说明 | 适配 | 源码路径 |
+|------|------|------|----------|
+| TaskManager | 任务生命周期管理 | 🟢 | `qlib/workflow/task/manage.py` |
+| Trainer/TrainerR | 模型训练器 | 🟢 | `qlib/model/trainer.py` |
+| OnlineManager | 在线模型管理 | 🟢 | `qlib/workflow/online/manager.py` |
+| RollingGen | 滚动任务生成 | 🟢 | `qlib/workflow/task/gen.py` |
+| PredUpdater | 增量预测更新 | 🟢 | `qlib/workflow/online/update.py` |
+
+#### 3.1.6 其他模块
+
+| 模块 | 组件 | 适配 |
 |------|------|------|
-| order_execution | 订单执行 RL | 可选，后期添加 |
-| Tianshou 集成 | RL 框架 | 可选，后期添加 |
+| 风险模型 | POETCovEstimator, ShrinkCovEstimator, StructuredCovEstimator | 🟢 |
+| 集成学习 | RollingEnsemble, AverageEnsemble, RollingGroup | 🟢 |
+| 调优器 | Tuner, TunerPipeline, SearchSpace | 🟢 |
+| 评估 | calc_ic, risk_analysis, backtest | 🟢 |
+| 报告 | cumulative_return_graph, risk_analysis_graph 等 | 🟢 |
+| RL 模块 | order_execution, Tianshou 集成 | 🟢 可选，后期添加 |
+
+#### 3.1.7 已有 Crypto 数据收集器
+
+> **重要**: Qlib 已有加密货币数据收集器，可直接扩展！
+
+| 组件 | 说明 | 适配 | 源码路径 |
+|------|------|------|----------|
+| CryptoCollector | CoinGecko API 日线数据 | 🟡 扩展支持 Binance + 1h | `scripts/data_collector/crypto/collector.py` |
 
 ### 3.2 Hummingbot 功能清单 (libs/hummingbot v2.11.0)
 
-#### 3.2.1 连接器 (37个)
+#### 3.2.1 连接器 (37个) - 全部 🟢 无需修改
 
 **永续合约 (11)**:
-| 连接器 | 优先级 |
-|--------|--------|
-| binance_perpetual | ✅ 首选 |
-| bybit_perpetual | 高 |
-| okx_perpetual | 高 |
-| gate_io_perpetual | 中 |
-| kucoin_perpetual | 中 |
-| bitget_perpetual | 中 |
-| bitmart_perpetual | 低 |
-| derive_perpetual | 低 |
-| dydx_v4_perpetual | 低 |
-| hyperliquid_perpetual | 低 |
-| injective_v2_perpetual | 低 |
+| 连接器 | 优先级 | 源码路径 |
+|--------|--------|----------|
+| binance_perpetual | ✅ 首选 | `connector/derivative/binance_perpetual/` |
+| bybit_perpetual | 高 | `connector/derivative/bybit_perpetual/` |
+| okx_perpetual | 高 | `connector/derivative/okx_perpetual/` |
+| gate_io_perpetual | 中 | `connector/derivative/gate_io_perpetual/` |
+| kucoin_perpetual | 中 | `connector/derivative/kucoin_perpetual/` |
+| bitget_perpetual | 中 | `connector/derivative/bitget_perpetual/` |
+| bitmart_perpetual | 低 | `connector/derivative/bitmart_perpetual/` |
+| derive_perpetual | 低 | `connector/derivative/derive_perpetual/` |
+| dydx_v4_perpetual | 低 | `connector/derivative/dydx_v4_perpetual/` |
+| hyperliquid_perpetual | 低 | `connector/derivative/hyperliquid_perpetual/` |
+| injective_v2_perpetual | 低 | `connector/derivative/injective_v2_perpetual/` |
 
 **现货 (26)**: binance, bybit, okx, kucoin, gate_io, htx, mexc, bitget, kraken, coinbase_advanced_trade, bitstamp, bitmart, bitrue, bing_x, ascend_ex, btc_markets, cube, derive, dexalot, foxbit, hyperliquid, injective_v2, ndax, vertex, xrpl, paper_trade
 
-#### 3.2.2 执行器 (7个)
+> **源码**: `connector/exchange/{name}/`
 
-| 执行器 | 说明 |
-|--------|------|
-| OrderExecutor | 单订单执行 |
-| PositionExecutor | 仓位执行 (Triple Barrier) |
-| DCAExecutor | 定投执行 |
-| TWAPExecutor | 时间加权均价 |
-| GridExecutor | 网格执行 |
-| ArbitrageExecutor | 两腿套利 |
-| XEMMExecutor | 跨交易所做市 |
+#### 3.2.2 执行器 (7个) - 全部 🟢 无需修改
 
-#### 3.2.3 V1 策略 (9个)
+| 执行器 | 说明 | 源码路径 |
+|--------|------|----------|
+| OrderExecutor | 单订单执行 | `strategy_v2/executors/order_executor/` |
+| PositionExecutor | 仓位执行 (Triple Barrier) | `strategy_v2/executors/position_executor/` |
+| DCAExecutor | 定投执行 | `strategy_v2/executors/dca_executor/` |
+| TWAPExecutor | 时间加权均价 | `strategy_v2/executors/twap_executor/` |
+| GridExecutor | 网格执行 | `strategy_v2/executors/grid_executor/` |
+| ArbitrageExecutor | 两腿套利 | `strategy_v2/executors/arbitrage_executor/` |
+| XEMMExecutor | 跨交易所做市 | `strategy_v2/executors/xemm_executor/` |
 
-| 策略 | 说明 |
-|------|------|
-| pure_market_making | 基础做市 |
-| avellaneda_market_making | Avellaneda-Stoikov 做市 |
-| cross_exchange_market_making | 跨交易所做市 |
-| cross_exchange_mining | 流动性挖矿做市 |
-| perpetual_market_making | 永续合约做市 |
-| amm_arb | AMM-CEX 套利 |
-| spot_perpetual_arbitrage | 现货-永续套利 |
-| liquidity_mining | 流动性挖矿 |
-| hedge | 风险对冲 |
+#### 3.2.3 V1 策略 (9个) - 全部 🟢 可直接使用
 
-#### 3.2.4 V2 控制器
+| 策略 | 说明 | 源码路径 |
+|------|------|----------|
+| pure_market_making | 基础做市 | `strategy/pure_market_making/` |
+| avellaneda_market_making | Avellaneda-Stoikov 做市 | `strategy/avellaneda_market_making/` |
+| cross_exchange_market_making | 跨交易所做市 | `strategy/cross_exchange_market_making/` |
+| cross_exchange_mining | 流动性挖矿做市 | `strategy/cross_exchange_mining/` |
+| perpetual_market_making | 永续合约做市 | `strategy/perpetual_market_making/` |
+| amm_arb | AMM-CEX 套利 | `strategy/amm_arb/` |
+| spot_perpetual_arbitrage | 现货-永续套利 | `strategy/spot_perpetual_arbitrage/` |
+| liquidity_mining | 流动性挖矿 | `strategy/liquidity_mining/` |
+| hedge | 风险对冲 | `strategy/hedge/` |
 
-| 控制器 | 说明 |
-|--------|------|
-| DirectionalTradingControllerBase | 方向性交易基类 |
+#### 3.2.4 V2 控制器 - 全部 🟢 无需修改
+
+| 控制器 | 说明 | 源码路径 |
+|--------|------|----------|
+| DirectionalTradingControllerBase | 方向性交易基类 | `strategy_v2/controllers/` |
 | MarketMakingControllerBase | 做市基类 |
 | ControllerBase | 控制器基类 |
 
-#### 3.2.5 数据源 (21+ K线源)
+#### 3.2.5 数据源 (21+ K线源) - 全部 🟢 无需修改
 
-binance_perpetual_candles, binance_spot_candles, bybit_perpetual_candles, okx_perpetual_candles, gate_io_perpetual_candles, kucoin_perpetual_candles, 等
+> **源码**: `data_feed/candles_feed/{exchange}_candles/`
 
-#### 3.2.6 风控功能
+binance_perpetual_candles, binance_spot_candles, bybit_perpetual_candles, okx_perpetual_candles, gate_io_perpetual_candles, kucoin_perpetual_candles, hyperliquid_perpetual_candles, mexc_perpetual_candles, bitget_perpetual_candles 等
 
-| 功能 | 说明 |
-|------|------|
-| Triple Barrier | 止盈/止损/时间限制 |
-| Trailing Stop | 追踪止损 |
-| Kill Switch | 紧急停止 |
-| Balance Limit | 资产限额 |
-| Position Limit | 持仓限制 |
-| Rate Limiter | API 限速 |
+#### 3.2.6 风控功能 - 全部 🟢 可直接使用
 
-#### 3.2.7 其他模块
+| 功能 | 说明 | 源码路径 |
+|------|------|----------|
+| Triple Barrier | 止盈/止损/时间限制 | `strategy_v2/executors/position_executor/` |
+| Trailing Stop | 追踪止损 | `strategy_v2/executors/position_executor/` |
+| Kill Switch | 紧急停止 | `core/kill_switch.py` |
+| Balance Limit | 资产限额 | 配置文件 |
+| Position Limit | 持仓限制 | 配置文件 |
+| Rate Limiter | API 限速 | `connector/*/` |
 
-| 模块 | 说明 |
-|------|------|
-| MQTT | 消息推送 |
-| Paper Trading | 模拟交易 |
-| Backtesting Engine | 回测引擎 |
-| 日志系统 | Hummingbot 内置 |
+#### 3.2.7 其他模块 - 全部 🟢 可直接使用
+
+| 模块 | 说明 | 源码路径 |
+|------|------|----------|
+| MQTT | 消息推送 | `remote_iface/mqtt.py` |
+| Paper Trading | 模拟交易 | `connector/exchange/paper_trade/` |
+| Backtesting Engine | 回测引擎 | `strategy_v2/backtesting/` |
+| 日志系统 | Hummingbot 内置 | `logger/` |
+
+### 3.3 适配工作量汇总
+
+| 类别 | 总数 | 🟢 无需修改 | 🟡 需验证 | 🔴 需实现 |
+|------|------|-------------|-----------|-----------|
+| Qlib 模型 | 32 | 32 | 0 | 0 |
+| Qlib 操作符 | 52 | 48 | 0 | 4 |
+| Qlib 基础设施 | 15+ | 10+ | 2 | 3 |
+| Hummingbot 连接器 | 37 | 37 | 0 | 0 |
+| Hummingbot 执行器 | 7 | 7 | 0 | 0 |
+| Hummingbot 策略 | 9 | 9 | 0 | 0 |
+| **总计** | **152+** | **143+** | **2** | **7** |
+
+> **结论**: 95%+ 的功能可直接使用，仅需实现 7 个核心适配类
 
 ---
 
@@ -2570,11 +2619,78 @@ tail -f /opt/algvex/logs/qlib.log
 | 单元测试 | tests/unit/ | 待开发 |
 | 集成测试 | tests/integration/ | 待开发 |
 | 本文档 | EXECUTION-PLAN.md | ✅ 完成 |
-| 技术方案 | TECHNICAL-PROPOSAL.md | ✅ 完成 |
 
 ---
 
-**文档版本**: 2.1
+## 附录 A: 参考资源
+
+### Qlib 官方资源
+
+| 资源 | 链接 |
+|------|------|
+| GitHub | https://github.com/microsoft/qlib |
+| 文档 | https://qlib.readthedocs.io/ |
+| 表达式操作符 | https://github.com/microsoft/qlib/blob/main/qlib/data/ops.py |
+| 任务管理 | https://qlib.readthedocs.io/en/latest/advanced/task_management.html |
+| 在线服务 | https://qlib.readthedocs.io/en/latest/component/online.html |
+| 嵌套执行 | https://qlib.readthedocs.io/en/latest/component/highfreq.html |
+
+### Hummingbot 官方资源
+
+| 资源 | 链接 |
+|------|------|
+| GitHub | https://github.com/hummingbot/hummingbot |
+| 文档 | https://hummingbot.org |
+| Dashboard | https://github.com/hummingbot/dashboard |
+| 连接器 | https://hummingbot.org/exchanges/ |
+| Strategy V2 | https://hummingbot.org/v2-strategies/ |
+| API 参考 | https://hummingbot.org/hummingbot-api/ |
+
+### 本地源码路径
+
+```
+libs/
+├── qlib/                              # Qlib v0.9.7
+│   ├── qlib/
+│   │   ├── contrib/
+│   │   │   ├── model/                 # 32 个模型
+│   │   │   ├── data/                  # Alpha158, Alpha360
+│   │   │   ├── strategy/              # 策略
+│   │   │   ├── ops/                   # 高频操作符
+│   │   │   └── tuner/                 # 超参数调优
+│   │   ├── data/
+│   │   │   └── ops.py                 # 52 个操作符
+│   │   ├── backtest/                  # 回测框架
+│   │   ├── workflow/                  # 工作流
+│   │   └── model/
+│   │       ├── riskmodel/             # 风险模型
+│   │       └── ens/                   # 集成学习
+│   └── scripts/
+│       └── data_collector/crypto/     # 已有 Crypto 收集器
+│
+└── hummingbot/                        # Hummingbot v2.11.0
+    └── hummingbot/
+        ├── connector/
+        │   ├── derivative/            # 11 永续连接器
+        │   └── exchange/              # 26 现货连接器
+        ├── strategy/                  # 9 V1 策略
+        ├── strategy_v2/
+        │   ├── executors/             # 7 执行器
+        │   ├── controllers/           # V2 控制器
+        │   └── backtesting/           # 回测引擎
+        ├── data_feed/
+        │   └── candles_feed/          # 21+ K线数据源
+        └── remote_iface/
+            └── mqtt.py                # MQTT 消息
+```
+
+---
+
+**文档版本**: 3.0 (合并技术方案)
 **创建日期**: 2025-12-31
 **更新日期**: 2025-12-31
-**更新内容**: 修复模型计数错误 (31→32), 修正 VWAPExecutor 描述, 补充 Alpha158 窗口适配说明, 添加 5.3 节详细实现规范
+**更新历史**:
+- v3.0: 合并 TECHNICAL-PROPOSAL.md，添加适配策略标记、源码路径、参考资源附录
+- v2.1: 修复模型计数错误 (31→32), 修正 VWAPExecutor 描述, 补充 Alpha158 窗口适配说明, 添加 5.3 节详细实现规范
+- v2.0: 重写执行方案结构
+- v1.0: 初始版本
