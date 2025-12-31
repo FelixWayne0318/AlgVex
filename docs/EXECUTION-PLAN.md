@@ -1,6 +1,6 @@
 # AlgVex 执行方案
 
-> **版本**: 4.1
+> **版本**: 4.2
 > **日期**: 2025-12-31
 > **目标**: 基于 Qlib v0.9.7 + Hummingbot v2.11.0 构建加密货币量化交易系统
 
@@ -50,7 +50,7 @@
 |------|------|----------|------|
 | Qlib | 0.9.7 | Python 3.10 | Research Container |
 | Hummingbot | 2.11.0 | Python 3.12 | Execution Container |
-| Redis | 7.x | Alpine | 消息层 (Streams) |
+| EMQX | 5.x | Alpine | 消息层 (MQTT) - 与 Hummingbot 生态对齐 |
 | 操作系统 | Ubuntu 22.04 | Docker | 容器化部署 |
 
 ### 1.4 为什么必须分离运行时
@@ -71,7 +71,7 @@
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────┐
-│                          AlgVex Platform v4.0                            │
+│                          AlgVex Platform v4.2                            │
 ├─────────────────────────────────────────────────────────────────────────┤
 │                                                                          │
 │  ┌───────────────────────────┐       ┌───────────────────────────┐      │
@@ -80,7 +80,7 @@
 │  │                           │       │                           │      │
 │  │  ┌─────────────────────┐  │       │  ┌─────────────────────┐  │      │
 │  │  │   Data Collector    │  │       │  │   Signal Consumer   │  │      │
-│  │  │  (CSV/Parquet only) │  │       │  │  (Async + ACK)      │  │      │
+│  │  │  (CSV/Parquet only) │  │       │  │  (paho-mqtt + QoS1) │  │      │
 │  │  └──────────┬──────────┘  │       │  └──────────┬──────────┘  │      │
 │  │             │             │       │             │             │      │
 │  │  ┌──────────▼──────────┐  │       │  ┌──────────▼──────────┐  │      │
@@ -99,20 +99,21 @@
 │  │  └──────────┬──────────┘  │       │  └──────────┬──────────┘  │      │
 │  │             │             │       │             │             │      │
 │  │  ┌──────────▼──────────┐  │       │  ┌──────────▼──────────┐  │      │
-│  │  │  Signal Generator   │  │       │  │   Status Reporter   │  │      │
+│  │  │  Signal Publisher   │  │       │  │   Status Reporter   │  │      │
+│  │  │   (paho-mqtt)       │  │       │  │   (paho-mqtt)       │  │      │
 │  │  └──────────┬──────────┘  │       │  └──────────┬──────────┘  │      │
 │  │             │             │       │             │             │      │
 │  └─────────────┼─────────────┘       └─────────────┼─────────────┘      │
 │                │                                   │                     │
 │                │     ┌───────────────────────┐     │                     │
-│                └────►│     Redis Streams     │◄────┘                     │
+│                └────►│      EMQX (MQTT)      │◄────┘                     │
 │                      │    (强制架构边界)       │                          │
 │                      │                       │                          │
-│                      │  • algvex:signals     │                          │
-│                      │  • algvex:status      │                          │
-│                      │  • algvex:commands    │                          │
-│                      │  • Consumer Groups    │                          │
-│                      │  • ACK + 重试机制      │                          │
+│                      │  • algvex/signals     │ (Topic)                  │
+│                      │  • algvex/status      │ (Topic)                  │
+│                      │  • algvex/commands    │ (Topic)                  │
+│                      │  • QoS 1 (至少一次)    │                          │
+│                      │  • Dashboard :18083   │                          │
 │                      └───────────────────────┘                          │
 │                                                                          │
 └─────────────────────────────────────────────────────────────────────────┘
@@ -121,43 +122,43 @@
 ### 2.2 消息流设计
 
 ```
-Research Container                    Redis Streams                    Execution Container
+Research Container                      EMQX (MQTT)                     Execution Container
        │                                    │                                  │
        │  1. 生成信号                        │                                  │
        ├───────────────────────────────────►│                                  │
-       │  XADD algvex:signals {             │                                  │
+       │  PUBLISH algvex/signals {          │                                  │
        │    signal_id: "uuid",              │                                  │
        │    timestamp: "2024-01-01T00:00Z", │                                  │
        │    symbol: "BTC-USDT",             │                                  │
        │    side: "BUY",                    │                                  │
        │    amount: "0.1",                  │                                  │
        │    score: "0.85"                   │                                  │
-       │  }                                 │                                  │
-       │                                    │  2. 消费信号 (XREADGROUP)         │
+       │  } QoS=1                           │                                  │
+       │                                    │  2. 推送信号 (SUBSCRIBE)          │
        │                                    ├─────────────────────────────────►│
        │                                    │                                  │
        │                                    │                    3. Readiness Check
        │                                    │                    4. 幂等检查
        │                                    │                    5. 执行交易
        │                                    │                                  │
-       │                                    │  6. ACK 确认 (XACK)              │
-       │                                    │◄─────────────────────────────────┤
-       │                                    │                                  │
-       │                                    │  7. 状态回报                      │
-       │  8. 接收状态                        │◄─────────────────────────────────┤
-       │◄───────────────────────────────────│  XADD algvex:status {...}        │
+       │                                    │  6. 状态回报                      │
+       │  7. 接收状态 (SUBSCRIBE)            │◄─────────────────────────────────┤
+       │◄───────────────────────────────────│  PUBLISH algvex/status {...}     │
        │                                    │                                  │
 ```
 
-### 2.3 为什么用 Redis Streams 而不是 Pub/Sub
+### 2.3 为什么用 MQTT (EMQX)
 
-| 特性 | Pub/Sub | Streams | 选择 |
-|------|---------|---------|------|
-| 消息持久化 | ❌ 无 | ✅ 有 | Streams |
-| ACK 确认 | ❌ 无 | ✅ 有 | Streams |
-| 消费者组 | ❌ 无 | ✅ 有 | Streams |
-| 消息重试 | ❌ 无 | ✅ 有 | Streams |
-| 历史回溯 | ❌ 无 | ✅ 有 | Streams |
+| 维度 | Redis Streams | MQTT (EMQX) | 选择 |
+|------|---------------|-------------|------|
+| **Hummingbot 生态** | ❌ 需自造协议 | ✅ 官方 brokers 直接兼容 | MQTT |
+| **可观测性** | 需写代码监控 | ✅ EMQX Dashboard 内置 | MQTT |
+| **多 bot 扩容** | 需自己设计 Consumer Group | ✅ Topic + QoS 原生支持 | MQTT |
+| **权限隔离** | 需应用层实现 | ✅ ACL 原生支持 | MQTT |
+| **未来迁移** | ⚠️ 接官方 Dashboard 需引入 MQTT | ✅ 已在生态内 | MQTT |
+| **消息可靠性** | ✅ Streams 强 | ✅ QoS 1/2 足够 | 平 |
+
+> **选择 MQTT 的核心理由**: Hummingbot 官方 [brokers](https://github.com/hummingbot/brokers) 使用 MQTT，未来接入官方 Dashboard/API 时无需引入第二套消息系统。
 
 ---
 
@@ -279,8 +280,8 @@ Research Container                    Redis Streams                    Execution
 | 3 | BinancePerpetualCollector | Research | `requests` | `collect()` → Parquet 文件 |
 | 4 | CryptoExchange | Research | `qlib.backtest.exchange.Exchange` | `deal()`, `get_quote()` + 杠杆/资金费率 |
 | 5 | PerpetualPosition | Research | `qlib.backtest.position.Position` | `update_order()` + 保证金计算 |
-| 6 | SignalPublisher | Research | `redis.Redis` | `publish()` → XADD 到 Streams |
-| 7 | SignalConsumer | Execution | `redis.asyncio.Redis` | `start()`, `_wait_for_connector_ready()`, `_is_duplicate()` |
+| 6 | SignalPublisher | Research | `paho-mqtt` | `publish()` → MQTT QoS 1 |
+| 7 | SignalConsumer | Execution | `paho-mqtt` | `on_message()`, `_wait_for_connector_ready()`, `_is_duplicate()` |
 
 **适配器类详细规格**:
 
@@ -326,7 +327,7 @@ AlgVex/
 │   │   ├── models/
 │   │   │   └── trainer.py             # 模型训练
 │   │   ├── signals/
-│   │   │   └── publisher.py           # SignalPublisher (Redis Streams)
+│   │   │   └── publisher.py           # SignalPublisher (MQTT)
 │   │   └── cli.py                     # 命令行入口
 │   └── tests/
 │
@@ -583,26 +584,28 @@ class CryptoCalendarProvider(CalendarProvider):
 ```python
 # research/algvex_research/signals/publisher.py
 """
-信号发布者 - 发布到 Redis Streams
+信号发布者 - 发布到 MQTT (EMQX)
 """
 import json
 import uuid
 from datetime import datetime, timezone
 from typing import List, Dict
-import redis
+import paho.mqtt.client as mqtt
 
 
 class SignalPublisher:
-    """信号发布者"""
+    """信号发布者 (MQTT)"""
 
-    STREAM_KEY = "algvex:signals"
+    TOPIC = "algvex/signals"
 
-    def __init__(self, redis_url: str = "redis://localhost:6379"):
-        self.redis = redis.from_url(redis_url, decode_responses=True)
+    def __init__(self, broker_host: str = "emqx", broker_port: int = 1883):
+        self.client = mqtt.Client(client_id=f"research-{uuid.uuid4().hex[:8]}")
+        self.client.connect(broker_host, broker_port, keepalive=60)
+        self.client.loop_start()
 
     def publish(self, signals: List[Dict]) -> List[str]:
         """
-        发布信号到 Redis Streams
+        发布信号到 MQTT
 
         Args:
             signals: 信号列表，每个信号包含:
@@ -612,24 +615,35 @@ class SignalPublisher:
                 - score: 预测分数
 
         Returns:
-            List[str]: 消息 ID 列表
+            List[str]: signal_id 列表
         """
-        message_ids = []
+        signal_ids = []
 
         for signal in signals:
+            signal_id = str(uuid.uuid4())
             message = {
-                "signal_id": str(uuid.uuid4()),
+                "signal_id": signal_id,
                 "timestamp": datetime.now(timezone.utc).isoformat(),
                 "symbol": signal["symbol"],
                 "side": signal["side"],
-                "amount": str(signal["amount"]),
-                "score": str(signal.get("score", 0)),
+                "amount": signal["amount"],
+                "score": signal.get("score", 0),
             }
 
-            msg_id = self.redis.xadd(self.STREAM_KEY, message)
-            message_ids.append(msg_id)
+            # QoS 1: 至少一次投递
+            self.client.publish(
+                self.TOPIC,
+                json.dumps(message),
+                qos=1,
+            )
+            signal_ids.append(signal_id)
 
-        return message_ids
+        return signal_ids
+
+    def close(self):
+        """关闭连接"""
+        self.client.loop_stop()
+        self.client.disconnect()
 ```
 
 #### 5.2.2 信号消费者 (Execution 服务)
@@ -637,77 +651,104 @@ class SignalPublisher:
 ```python
 # execution/algvex_execution/consumer/signal_consumer.py
 """
-信号消费者 - Async + Readiness Gate + 幂等 + ACK
+信号消费者 - MQTT + Readiness Gate + 幂等
 
 这是信号桥的核心实现，包含生产级可靠性保障
 """
 import asyncio
+import json
 import logging
 from typing import Dict, Optional, Set
 from datetime import datetime, timedelta, timezone
-import redis.asyncio as redis
+import paho.mqtt.client as mqtt
 
 logger = logging.getLogger(__name__)
 
 
 class SignalConsumer:
     """
-    信号消费者
+    信号消费者 (MQTT)
 
     关键特性:
-    1. Async 非阻塞
+    1. MQTT QoS 1 (至少一次)
     2. Connector Readiness Gate
     3. 幂等去重
-    4. ACK 确认
-    5. 失败重试
+    4. 异步执行
     """
 
-    STREAM_KEY = "algvex:signals"
-    GROUP_NAME = "execution"
-    CONSUMER_NAME = "worker-1"
+    TOPIC = "algvex/signals"
 
     def __init__(
         self,
-        redis_url: str,
+        broker_host: str,
+        broker_port: int,
         connector,  # Hummingbot connector
         executor,   # Hummingbot executor
     ):
-        self.redis_url = redis_url
-        self.redis: Optional[redis.Redis] = None
+        self.broker_host = broker_host
+        self.broker_port = broker_port
         self.connector = connector
         self.executor = executor
+
+        # MQTT 客户端
+        self.client = mqtt.Client(client_id="execution-worker")
+        self.client.on_connect = self._on_connect
+        self.client.on_message = self._on_message
 
         # 幂等去重: 已处理的 signal_id
         self._processed_ids: Set[str] = set()
         self._processed_ids_ttl: Dict[str, datetime] = {}
 
-    async def start(self):
-        """启动消费者"""
-        self.redis = redis.from_url(self.redis_url, decode_responses=True)
+        # 就绪状态
+        self._connector_ready = False
 
-        # 创建消费者组 (如不存在)
-        try:
-            await self.redis.xgroup_create(
-                self.STREAM_KEY, self.GROUP_NAME, id="0", mkstream=True
-            )
-        except redis.ResponseError as e:
-            if "BUSYGROUP" not in str(e):
-                raise
-
+    def start(self):
+        """启动消费者 (阻塞)"""
         # 1. 等待 Connector 就绪
-        await self._wait_for_connector_ready()
+        self._wait_for_connector_ready()
+
+        # 2. 连接 MQTT
+        self.client.connect(self.broker_host, self.broker_port, keepalive=60)
 
         logger.info("SignalConsumer started")
 
-        # 2. 消费循环
-        while True:
-            try:
-                await self._consume_loop()
-            except Exception as e:
-                logger.error(f"Consume error: {e}")
-                await asyncio.sleep(5)
+        # 3. 阻塞运行
+        self.client.loop_forever()
 
-    async def _wait_for_connector_ready(self):
+    def _on_connect(self, client, userdata, flags, rc):
+        """连接成功回调"""
+        if rc == 0:
+            logger.info("Connected to MQTT broker")
+            # 订阅信号 Topic (QoS 1)
+            client.subscribe(self.TOPIC, qos=1)
+        else:
+            logger.error(f"MQTT connect failed: {rc}")
+
+    def _on_message(self, client, userdata, msg):
+        """消息回调"""
+        try:
+            data = json.loads(msg.payload.decode())
+            signal_id = data.get("signal_id")
+
+            # 幂等检查
+            if self._is_duplicate(signal_id):
+                logger.info(f"Duplicate signal, skip: {signal_id}")
+                return
+
+            # 执行交易
+            self._execute_signal(data)
+
+            # 记录已处理
+            self._mark_processed(signal_id)
+            logger.info(f"Signal processed: {signal_id}")
+
+            # 清理过期记录
+            self._cleanup_processed_ids()
+
+        except Exception as e:
+            logger.error(f"Message processing error: {e}")
+
+    def _wait_for_connector_ready(self):
         """
         Connector Readiness Gate
 
@@ -716,6 +757,7 @@ class SignalConsumer:
         2. 能获取价格
         3. leverage 设置已获取 (永续合约)
         """
+        import time
         logger.info("Waiting for connector ready...")
 
         while True:
@@ -723,7 +765,7 @@ class SignalConsumer:
                 # 检查 trading rules
                 if not self.connector.trading_rules:
                     logger.debug("Trading rules not ready")
-                    await asyncio.sleep(1)
+                    time.sleep(1)
                     continue
 
                 # 检查价格
@@ -731,7 +773,7 @@ class SignalConsumer:
                 price = self.connector.get_mid_price(test_symbol)
                 if price is None or price <= 0:
                     logger.debug("Price not ready")
-                    await asyncio.sleep(1)
+                    time.sleep(1)
                     continue
 
                 # 永续合约: 检查 leverage
@@ -739,74 +781,30 @@ class SignalConsumer:
                     leverage = self.connector.get_leverage(test_symbol)
                     if leverage is None:
                         logger.debug("Leverage not ready")
-                        await asyncio.sleep(1)
+                        time.sleep(1)
                         continue
 
                 logger.info("Connector ready!")
+                self._connector_ready = True
                 break
 
             except Exception as e:
                 logger.debug(f"Readiness check error: {e}")
-                await asyncio.sleep(1)
+                time.sleep(1)
 
-    async def _consume_loop(self):
-        """消费循环"""
-        while True:
-            # 读取消息
-            messages = await self.redis.xreadgroup(
-                groupname=self.GROUP_NAME,
-                consumername=self.CONSUMER_NAME,
-                streams={self.STREAM_KEY: ">"},
-                count=10,
-                block=5000,  # 5 秒超时
-            )
-
-            if not messages:
-                continue
-
-            for stream_name, stream_messages in messages:
-                for msg_id, data in stream_messages:
-                    await self._process_message(msg_id, data)
-
-            # 清理过期的幂等记录
-            self._cleanup_processed_ids()
-
-    async def _process_message(self, msg_id: str, data: Dict):
-        """处理单条消息"""
-        signal_id = data.get("signal_id")
-
-        # 幂等检查
-        if self._is_duplicate(signal_id):
-            logger.info(f"Duplicate signal, skip: {signal_id}")
-            await self.redis.xack(self.STREAM_KEY, self.GROUP_NAME, msg_id)
-            return
-
-        try:
-            # 执行交易
-            await self._execute_signal(data)
-
-            # 记录已处理
-            self._mark_processed(signal_id)
-
-            # ACK 确认
-            await self.redis.xack(self.STREAM_KEY, self.GROUP_NAME, msg_id)
-            logger.info(f"Signal processed: {signal_id}")
-
-        except Exception as e:
-            # 失败不 ACK，等待重新投递
-            logger.error(f"Signal failed, will retry: {signal_id}, error: {e}")
-
-    async def _execute_signal(self, data: Dict):
+    def _execute_signal(self, data: Dict):
         """执行信号"""
         symbol = data["symbol"]
         side = data["side"]
         amount = float(data["amount"])
 
-        # 调用 Hummingbot executor
-        await self.executor.execute(
-            symbol=symbol,
-            side=side,
-            amount=amount,
+        # 调用 Hummingbot executor (同步包装)
+        asyncio.get_event_loop().run_until_complete(
+            self.executor.execute(
+                symbol=symbol,
+                side=side,
+                amount=amount,
+            )
         )
 
     def _is_duplicate(self, signal_id: str) -> bool:
@@ -837,15 +835,17 @@ class SignalConsumer:
 version: "3.8"
 
 services:
-  redis:
-    image: redis:7-alpine
+  emqx:
+    image: emqx:5
     ports:
-      - "6379:6379"
+      - "1883:1883"     # MQTT
+      - "18083:18083"   # Dashboard
+    environment:
+      - EMQX_ALLOW_ANONYMOUS=true  # 开发环境，生产需配置认证
     volumes:
-      - redis_data:/data
-    command: redis-server --appendonly yes
+      - emqx_data:/opt/emqx/data
     healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
+      test: ["CMD", "emqx", "ping"]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -855,10 +855,11 @@ services:
       context: ../research
       dockerfile: Dockerfile
     depends_on:
-      redis:
+      emqx:
         condition: service_healthy
     environment:
-      - REDIS_URL=redis://redis:6379
+      - MQTT_BROKER=emqx
+      - MQTT_PORT=1883
       - QLIB_DATA_DIR=/data/qlib_data
       - TZ=UTC
     volumes:
@@ -871,10 +872,11 @@ services:
       context: ../execution
       dockerfile: Dockerfile
     depends_on:
-      redis:
+      emqx:
         condition: service_healthy
     environment:
-      - REDIS_URL=redis://redis:6379
+      - MQTT_BROKER=emqx
+      - MQTT_PORT=1883
       - EXCHANGE=binance_perpetual
       - TZ=UTC
     volumes:
@@ -883,7 +885,7 @@ services:
     restart: unless-stopped
 
 volumes:
-  redis_data:
+  emqx_data:
 ```
 
 ---
@@ -902,7 +904,7 @@ volumes:
 | 1.2 | 编写 Research Dockerfile | `research/Dockerfile` | 构建成功，`import qlib` 通过 | 1.1 |
 | 1.3 | 编写 Execution Dockerfile | `execution/Dockerfile` | 构建成功，`import hummingbot` 通过 | 1.1 |
 | 1.4 | 编写 docker-compose.yml | `docker/docker-compose.yml` | `docker-compose up` 三服务启动 | 1.2, 1.3 |
-| 1.5 | 编写 Redis Streams 测试脚本 | `scripts/test_redis.py` | XADD/XREADGROUP 成功 | 1.4 |
+| 1.5 | 编写 MQTT 测试脚本 | `scripts/test_mqtt.py` | paho-mqtt publish/subscribe 成功 | 1.4 |
 | 1.6 | 编写开发环境配置 | `docker/docker-compose.dev.yml` | 热重载生效 | 1.4 |
 
 **阶段 1 交付物检查清单**:
@@ -911,7 +913,7 @@ volumes:
 □ docker-compose up -d 三个容器运行
 □ docker-compose exec research python -c "import qlib; print('OK')"
 □ docker-compose exec execution python -c "import hummingbot; print('OK')"
-□ docker-compose exec redis redis-cli ping → PONG
+□ 访问 http://localhost:18083 → EMQX Dashboard 可用
 ```
 
 ---
@@ -967,25 +969,24 @@ volumes:
 
 ### 阶段 4: 信号桥 (跨服务通信)
 
-**目标**: 实现 Research → Redis Streams → Execution 的可靠通信
+**目标**: 实现 Research → MQTT (EMQX) → Execution 的可靠通信
 
 | 序号 | 子任务 | 交付物 | 验收标准 | 依赖 |
 |------|--------|--------|----------|------|
-| 4.1 | 实现 SignalPublisher | `research/algvex_research/signals/publisher.py` | XADD 成功 | 阶段 1 |
-| 4.2 | 实现 SignalConsumer 框架 | `execution/algvex_execution/consumer/signal_consumer.py` | XREADGROUP 成功 | 阶段 1 |
+| 4.1 | 实现 SignalPublisher | `research/algvex_research/signals/publisher.py` | MQTT publish QoS 1 成功 | 阶段 1 |
+| 4.2 | 实现 SignalConsumer 框架 | `execution/algvex_execution/consumer/signal_consumer.py` | MQTT subscribe 回调成功 | 阶段 1 |
 | 4.3 | 实现 Readiness Gate | `execution/algvex_execution/consumer/readiness_gate.py` | 检测 Connector 就绪 | 4.2 |
 | 4.4 | 实现幂等去重 | `execution/algvex_execution/consumer/idempotency.py` | 重复 signal_id 跳过 | 4.2 |
-| 4.5 | 实现 ACK/重试逻辑 | 集成到 signal_consumer.py | 失败不 ACK，自动重试 | 4.2 |
-| 4.6 | 实现状态回报 | `execution/algvex_execution/reporter/status_publisher.py` | 状态发布到 algvex:status | 4.2 |
-| 4.7 | 编写信号桥集成测试 | `tests/integration/test_signal_bridge.py` | 端到端测试通过 | 4.1-4.6 |
+| 4.5 | 实现状态回报 | `execution/algvex_execution/reporter/status_publisher.py` | 状态发布到 algvex/status | 4.2 |
+| 4.6 | 编写信号桥集成测试 | `tests/integration/test_signal_bridge.py` | 端到端测试通过 | 4.1-4.5 |
 
 **阶段 4 交付物检查清单**:
 ```bash
-□ python publisher.py → Redis XINFO STREAM algvex:signals 显示消息
+□ python publisher.py → EMQX Dashboard 显示 algvex/signals 有消息
 □ python signal_consumer.py → 日志显示 "Signal processed"
 □ 发送重复 signal_id → 日志显示 "Duplicate signal, skip"
-□ 模拟消费失败 → XPENDING 显示 pending 消息
-□ 重启消费者 → pending 消息被重新处理
+□ EMQX Dashboard → Subscriptions 显示 execution-worker
+□ mosquitto_sub -t "algvex/#" → 可监控所有消息
 ```
 
 ---
@@ -1088,8 +1089,10 @@ docker-compose logs -f execution
 docker-compose exec research pytest tests/ -v
 docker-compose exec execution pytest tests/ -v
 
-# 5. 验证 Redis Streams
-docker-compose exec redis redis-cli XINFO STREAM algvex:signals
+# 5. 验证 MQTT (EMQX)
+# 访问 Dashboard: http://localhost:18083 (默认 admin/public)
+# 或使用 mosquitto 命令行工具监控消息:
+mosquitto_sub -h localhost -t "algvex/#" -v
 
 # 6. 停止服务
 docker-compose down
@@ -1099,13 +1102,13 @@ docker-compose down
 
 | 检查项 | 命令 | 通过标准 |
 |--------|------|----------|
-| Redis 连接 | `redis-cli ping` | PONG |
+| EMQX 连接 | 访问 `http://localhost:18083` | Dashboard 可用 |
 | Research 启动 | `docker-compose logs research` | 无错误 |
 | Execution 启动 | `docker-compose logs execution` | Connector Ready |
 | 数据收集 | 运行 collector | Parquet 文件生成 |
 | 数据转换 | 运行 convert | qlib_data 目录生成 |
-| 信号发布 | 查看 Streams | 消息存在 |
-| 信号消费 | 查看 Execution 日志 | ACK 成功 |
+| 信号发布 | Dashboard → Topics | algvex/signals 有消息 |
+| 信号消费 | 查看 Execution 日志 | Signal processed |
 
 ---
 
@@ -1156,12 +1159,14 @@ docker-compose ps
 # 查看资源使用
 docker stats
 
-# 查看 Redis Streams 状态
-docker-compose exec redis redis-cli XINFO STREAM algvex:signals
-docker-compose exec redis redis-cli XINFO GROUPS algvex:signals
+# 查看 EMQX 状态
+# 1. Dashboard: http://localhost:18083 (admin/public)
+#    - Clients: 查看连接的客户端
+#    - Subscriptions: 查看订阅关系
+#    - Topics: 查看消息统计
 
-# 查看待处理消息
-docker-compose exec redis redis-cli XPENDING algvex:signals execution
+# 2. 命令行监控所有消息
+mosquitto_sub -h localhost -t "algvex/#" -v
 
 # 重启服务
 docker-compose restart execution
@@ -1187,8 +1192,8 @@ data → factor → train → backtest → signal → execution → risk → mon
 | 因子计算 | Alpha158 (适配窗口) 计算成功 |
 | 模型训练 | LGBModel IC > 0.02 |
 | 回测 | 完整运行无错误 |
-| 信号发布 | Redis Streams 消息存在 |
-| 信号消费 | ACK 成功率 > 99% |
+| 信号发布 | MQTT 消息发布成功 (EMQX Dashboard 可见) |
+| 信号消费 | 处理成功率 > 99% |
 | 风控 | Kill Switch 触发正确 |
 | 监控 | 状态回报正常 |
 
@@ -1268,7 +1273,9 @@ data → factor → train → backtest → signal → execution → risk → mon
 | Hummingbot GitHub | https://github.com/hummingbot/hummingbot |
 | Hummingbot 文档 | https://hummingbot.org/docs/ |
 | Quants Lab | https://github.com/hummingbot/quants-lab |
-| Redis Streams | https://redis.io/docs/data-types/streams/ |
+| Hummingbot Brokers | https://github.com/hummingbot/brokers |
+| EMQX 文档 | https://www.emqx.io/docs/zh/latest/ |
+| paho-mqtt | https://pypi.org/project/paho-mqtt/ |
 
 ### 本地源码路径
 
@@ -1377,10 +1384,10 @@ libs/
 
 | 问题 | 症状 | 解决方案 |
 |------|------|----------|
-| **Redis 连接失败** | `ConnectionRefusedError` | 检查 Redis 是否启动: `docker-compose logs redis` |
-| **消费者组不存在** | `NOGROUP No such consumer group` | 消费者会自动创建，检查代码中 `xgroup_create` |
-| **消息堆积** | `XPENDING` 显示大量 pending | 检查消费者日志，可能是处理失败或 ACK 缺失 |
-| **重复执行** | 同一信号执行多次 | 检查幂等去重逻辑是否生效 |
+| **MQTT 连接失败** | `ConnectionRefusedError` | 检查 EMQX 是否启动: `docker-compose logs emqx` |
+| **订阅未生效** | Dashboard 无订阅者 | 检查 client_id 是否冲突，确认 `on_connect` 回调执行 |
+| **消息未收到** | Consumer 无日志 | 检查 Topic 名称是否一致 (`algvex/signals`) |
+| **重复执行** | 同一信号执行多次 | 检查幂等去重逻辑，QoS 1 可能重复投递 |
 
 ### C.4 执行问题
 
@@ -1394,18 +1401,18 @@ libs/
 ### C.5 调试命令
 
 ```bash
-# 1. 检查 Redis Streams 状态
-docker-compose exec redis redis-cli XINFO STREAM algvex:signals
-docker-compose exec redis redis-cli XINFO GROUPS algvex:signals
+# 1. 检查 EMQX 状态
+# 访问 Dashboard: http://localhost:18083 (admin/public)
+# 查看: Clients, Subscriptions, Topics
 
-# 2. 查看 pending 消息 (未 ACK)
-docker-compose exec redis redis-cli XPENDING algvex:signals execution
+# 2. 命令行监控所有消息
+mosquitto_sub -h localhost -t "algvex/#" -v
 
-# 3. 手动 ACK 消息 (谨慎使用)
-docker-compose exec redis redis-cli XACK algvex:signals execution <message_id>
+# 3. 手动发送测试消息
+mosquitto_pub -h localhost -t "algvex/signals" -m '{"signal_id":"test-123","symbol":"BTC-USDT","side":"BUY","amount":"0.01"}'
 
-# 4. 查看最近 10 条消息
-docker-compose exec redis redis-cli XREVRANGE algvex:signals + - COUNT 10
+# 4. 查看 EMQX 容器日志
+docker-compose logs emqx
 
 # 5. 检查 Qlib 数据
 docker-compose exec research python -c "
@@ -1431,10 +1438,11 @@ docker-compose exec execution bash
 
 ---
 
-**文档版本**: 4.1 (增强实施参考)
+**文档版本**: 4.2 (MQTT 消息层)
 **创建日期**: 2025-12-31
 **更新日期**: 2025-12-31
 **更新历史**:
+- v4.2: 消息层改为 MQTT (EMQX) - 与 Hummingbot 生态对齐，paho-mqtt 替代 redis，EMQX Dashboard 可观测性
 - v4.1: 增强实施参考 - 添加源码路径参考表、细化阶段子任务、扩展适配器类规格、添加故障排查指南
 - v4.0: 架构重构 - 双容器分离、官方数据转换、生产级信号桥、能力矩阵、风险偏差声明
 - v3.1: 添加目录结构，修复适配工作量统计
