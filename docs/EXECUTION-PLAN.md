@@ -902,6 +902,252 @@ volumes:
   emqx_data:
 ```
 
+#### 5.3.1 Research Dockerfile
+
+```dockerfile
+# research/Dockerfile
+FROM python:3.10-slim
+
+WORKDIR /app
+
+# 系统依赖
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential \
+    git \
+    && rm -rf /var/lib/apt/lists/*
+
+# Python 依赖
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+
+# 安装 Qlib (从本地 libs)
+COPY --from=libs /libs/qlib /libs/qlib
+RUN pip install -e /libs/qlib
+
+# 应用代码
+COPY algvex_research/ ./algvex_research/
+
+ENV PYTHONUNBUFFERED=1
+ENV TZ=UTC
+
+CMD ["python", "-m", "algvex_research.cli", "run"]
+```
+
+#### 5.3.2 Research requirements.txt
+
+```txt
+# research/requirements.txt
+# Qlib 核心依赖会通过 pip install -e 自动安装
+
+# MQTT 通信
+paho-mqtt>=1.6.1
+
+# 数据处理
+pyarrow>=14.0.0
+requests>=2.31.0
+
+# 配置
+pyyaml>=6.0
+python-dotenv>=1.0.0
+
+# 日志
+loguru>=0.7.0
+```
+
+#### 5.3.3 Execution Dockerfile
+
+```dockerfile
+# execution/Dockerfile
+FROM python:3.12-slim
+
+WORKDIR /app
+
+# 系统依赖 (Hummingbot 需要)
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential \
+    git \
+    libssl-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+# Python 依赖
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+
+# 安装 Hummingbot (从本地 libs)
+COPY --from=libs /libs/hummingbot /libs/hummingbot
+RUN pip install -e /libs/hummingbot
+
+# 应用代码
+COPY algvex_execution/ ./algvex_execution/
+
+ENV PYTHONUNBUFFERED=1
+ENV TZ=UTC
+
+CMD ["python", "-m", "algvex_execution.cli", "run"]
+```
+
+#### 5.3.4 Execution requirements.txt
+
+```txt
+# execution/requirements.txt
+# Hummingbot 核心依赖会通过 pip install -e 自动安装
+
+# MQTT 通信
+paho-mqtt>=1.6.1
+
+# 配置
+pyyaml>=6.0
+python-dotenv>=1.0.0
+
+# 日志
+loguru>=0.7.0
+```
+
+#### 5.3.5 Qlib 初始化配置
+
+```python
+# research/algvex_research/config/qlib_init.py
+"""
+Qlib 初始化配置
+
+在任何 Qlib 操作前必须调用 init_qlib()
+"""
+import os
+import qlib
+from qlib.config import REG_CN  # 默认配置模板
+
+
+def init_qlib(
+    data_dir: str = None,
+    freq: str = "1h",
+):
+    """
+    初始化 Qlib
+
+    Args:
+        data_dir: Qlib 数据目录，默认从环境变量 QLIB_DATA_DIR 读取
+        freq: 数据频率
+    """
+    if data_dir is None:
+        data_dir = os.environ.get("QLIB_DATA_DIR", "./data/qlib_data")
+
+    # 自定义 Provider (加密货币 24/7)
+    custom_provider = {
+        "calendar_provider": {
+            "class": "algvex_research.data.calendar.CryptoCalendarProvider",
+            "kwargs": {},
+        },
+        "instrument_provider": {
+            "class": "algvex_research.data.instrument.CryptoInstrumentProvider",
+            "kwargs": {},
+        },
+    }
+
+    qlib.init(
+        provider_uri=data_dir,
+        region=REG_CN,  # 基础模板，会被 custom_provider 覆盖
+        custom_ops=None,
+        expression_cache=None,
+        dataset_cache=None,
+        **custom_provider,
+    )
+
+    print(f"Qlib initialized with data_dir={data_dir}, freq={freq}")
+
+
+# 使用示例
+if __name__ == "__main__":
+    init_qlib()
+
+    # 验证初始化成功
+    from qlib.data import D
+    instruments = D.instruments(market="all")
+    print(f"Available instruments: {instruments}")
+```
+
+#### 5.3.6 交易所配置示例
+
+```yaml
+# config/exchanges/binance.yaml
+# Binance 永续合约配置
+
+exchange: binance_perpetual
+
+# API 凭证 (生产环境建议使用环境变量)
+api_key: ${BINANCE_API_KEY}
+api_secret: ${BINANCE_API_SECRET}
+
+# 交易设置
+trading:
+  # 交易对列表
+  symbols:
+    - BTC-USDT
+    - ETH-USDT
+
+  # 杠杆倍数
+  leverage: 3
+
+  # 仓位模式: "one-way" 或 "hedge"
+  position_mode: one-way
+
+# 风控设置
+risk:
+  # 最大仓位 (USD)
+  max_position_usd: 10000
+
+  # 单笔最大下单量 (USD)
+  max_order_usd: 1000
+
+  # Kill Switch: 日亏损达到此比例停止交易
+  daily_loss_limit_pct: 0.05
+
+  # Triple Barrier 默认值
+  triple_barrier:
+    take_profit_pct: 0.02
+    stop_loss_pct: 0.01
+    time_limit_hours: 24
+
+# 网络设置
+network:
+  # 使用测试网 (Paper Trading)
+  testnet: true
+
+  # 请求超时 (秒)
+  timeout: 30
+
+  # 重试次数
+  max_retries: 3
+```
+
+```yaml
+# config/exchanges/binance_testnet.yaml
+# Binance 测试网配置 (Paper Trading)
+
+exchange: binance_perpetual
+
+api_key: ${BINANCE_TESTNET_API_KEY}
+api_secret: ${BINANCE_TESTNET_API_SECRET}
+
+# 测试网 API 端点
+base_url: https://testnet.binancefuture.com
+
+trading:
+  symbols:
+    - BTC-USDT
+  leverage: 1
+  position_mode: one-way
+
+risk:
+  max_position_usd: 1000
+  max_order_usd: 100
+  daily_loss_limit_pct: 0.10
+
+network:
+  testnet: true
+  timeout: 30
+  max_retries: 3
+```
+
 ### 5.4 数据质量规范
 
 > 用"严格 UTC + open_time 对齐 + 可重复构建"的规则，彻底消除最难排查的时间错位/缺K/重复K问题
