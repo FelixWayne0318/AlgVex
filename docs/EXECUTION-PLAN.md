@@ -61,7 +61,7 @@
 │  │  ┌─────────────────────┐       ┌─────────────────────┐        │ │
 │  │  │    Qlib v0.9.7      │       │  Hummingbot v2.11.0 │        │ │
 │  │  │  ┌───────────────┐  │       │  ┌───────────────┐  │        │ │
-│  │  │  │ 31 个模型     │  │       │  │ 37 个连接器   │  │        │ │
+│  │  │  │ 32 个模型     │  │       │  │ 37 个连接器   │  │        │ │
 │  │  │  │ 52 个操作符   │  │       │  │ 7 个执行器    │  │        │ │
 │  │  │  │ 158 个因子    │  │       │  │ 9 个V1策略    │  │        │ │
 │  │  │  │ 回测框架      │  │       │  │ 风控系统      │  │        │ │
@@ -80,15 +80,17 @@
 
 ### 3.1 Qlib 功能清单 (libs/qlib v0.9.7)
 
-#### 3.1.1 模型 (31个)
+#### 3.1.1 模型 (32个)
 
-| 类别 | 模型 | 文件 |
-|------|------|------|
-| 传统ML (5) | LinearModel, LGBModel, HFLGBModel, XGBModel, CatBoostModel | linear.py, gbdt.py, highfreq_gdbt_model.py, xgboost.py, catboost_model.py |
-| RNN (12) | LSTM, LSTM_ts, GRU, GRU_ts, ALSTM, ALSTM_ts, GATs, GATs_ts, KRNN, SFM, ADARNN, Sandwich | pytorch_*.py |
-| Transformer (4) | TransformerModel, TransformerModel_ts, LocalformerModel, LocalformerModel_ts | pytorch_transformer*.py, pytorch_localformer*.py |
-| CNN (4) | TCN, TCN_ts, TemporalConvNet, TCTS | pytorch_tcn*.py, tcn.py, pytorch_tcts.py |
-| 高级 (6) | DNNModelPytorch, GeneralPTNN, TabnetModel, TRAModel, DEnsembleModel, IGMTF, HIST, ADD | pytorch_nn.py, pytorch_general_nn.py, etc. |
+| 类别 | 数量 | 模型 | 文件 |
+|------|------|------|------|
+| 传统ML | 5 | LinearModel, LGBModel, HFLGBModel, XGBModel, CatBoostModel | linear.py, gbdt.py, highfreq_gdbt_model.py, xgboost.py, catboost_model.py |
+| RNN | 12 | LSTM, LSTM_ts, GRU, GRU_ts, ALSTM, ALSTM_ts, GATs, GATs_ts, KRNN, SFM, ADARNN, Sandwich | pytorch_lstm*.py, pytorch_gru*.py, pytorch_alstm*.py, pytorch_gats*.py, pytorch_krnn.py, pytorch_sfm.py, pytorch_adarnn.py, pytorch_sandwich.py |
+| Transformer | 4 | TransformerModel, TransformerModel_ts, LocalformerModel, LocalformerModel_ts | pytorch_transformer.py, pytorch_transformer_ts.py, pytorch_localformer.py, pytorch_localformer_ts.py |
+| CNN | 3 | TCN, TCN_ts, TCTS | pytorch_tcn.py, pytorch_tcn_ts.py, pytorch_tcts.py |
+| 高级 | 8 | DNNModelPytorch, GeneralPTNN, TabnetModel, TRAModel, DEnsembleModel, IGMTF, HIST, ADD | pytorch_nn.py, pytorch_general_nn.py, pytorch_tabnet.py, pytorch_tra.py, double_ensemble.py, pytorch_igmtf.py, pytorch_hist.py, pytorch_add.py |
+
+> **注**: tcn.py 包含 TemporalBlock 构建块，被 TCN/TCN_ts 模型使用，不是独立模型。
 
 #### 3.1.2 操作符 (52个)
 
@@ -108,7 +110,7 @@
 |------|------|
 | 数据处理器 | DropnaProcessor, TanhProcess, ZscoreNorm, CSRankNorm 等 10+ |
 | 策略 | BaseSignalStrategy, SBBStrategyEMA, SoftTopkStrategy, EnhancedIndexingOptimizer |
-| 回测 | SimulatorExecutor, NestedExecutor, VWAPExecutor |
+| 回测 | SimulatorExecutor, NestedExecutor (支持 VWAP/TWAP 价格计算) |
 | 风险模型 | POETCovEstimator, ShrinkCovEstimator, StructuredCovEstimator |
 | 集成学习 | RollingEnsemble, AverageEnsemble, RollingGroup |
 | 调优器 | Tuner, TunerPipeline, SearchSpace |
@@ -411,6 +413,1600 @@ class SignalConverter:
 | 测试覆盖率 | 核心模块 > 80% |
 | 日志 | 使用 Qlib/Hummingbot 内置日志 |
 
+### 5.3 详细实现规范
+
+本节提供每个模块的完整实现规范，包含类继承关系、方法签名、数据流和依赖关系。
+
+#### 5.3.1 数据层完整实现 (algvex/data/)
+
+**文件清单与依赖关系**:
+
+```
+algvex/data/
+├── __init__.py          # 导出所有公开类
+├── calendar.py          # CryptoCalendarProvider (依赖: qlib.data.data.CalendarProvider)
+├── instrument.py        # CryptoInstrumentProvider (依赖: qlib.data.data.InstrumentProvider)
+├── collector.py         # BinancePerpetualCollector (依赖: libs.qlib.scripts.data_collector.crypto)
+├── handler.py           # CryptoDataHandler (依赖: qlib.contrib.data.handler.Alpha158)
+└── converter.py         # HummingbotDataConverter (依赖: hummingbot.data_feed.candles_feed)
+```
+
+**calendar.py 完整实现**:
+
+```python
+"""
+加密货币 24/7 日历提供者
+
+继承关系: CryptoCalendarProvider -> CalendarProvider
+引用路径: libs/qlib/qlib/data/data.py::CalendarProvider
+"""
+from typing import List, Union
+import pandas as pd
+from qlib.data.data import CalendarProvider
+
+class CryptoCalendarProvider(CalendarProvider):
+    """
+    24/7 加密货币交易日历
+
+    与传统股票市场不同，加密货币市场全年无休，
+    本类生成连续的时间戳序列，无需排除节假日。
+
+    Attributes:
+        SUPPORTED_FREQS: 支持的时间频率列表
+    """
+
+    SUPPORTED_FREQS = {
+        "1min": "T",
+        "5min": "5T",
+        "15min": "15T",
+        "30min": "30T",
+        "1h": "H",
+        "4h": "4H",
+        "1d": "D",
+    }
+
+    def __init__(self):
+        """初始化日历提供者"""
+        super().__init__()
+
+    def calendar(
+        self,
+        start_time: Union[str, pd.Timestamp],
+        end_time: Union[str, pd.Timestamp],
+        freq: str = "1h",
+        future: bool = False,
+    ) -> List[pd.Timestamp]:
+        """
+        生成指定时间范围内的交易时间戳列表
+
+        Args:
+            start_time: 开始时间 (格式: "2024-01-01" 或 pd.Timestamp)
+            end_time: 结束时间
+            freq: 时间频率 ("1min", "5min", "15min", "1h", "4h", "1d")
+            future: 是否包含未来时间 (通常为 False)
+
+        Returns:
+            List[pd.Timestamp]: 时间戳列表
+
+        Raises:
+            ValueError: 如果 freq 不在支持列表中
+
+        Example:
+            >>> provider = CryptoCalendarProvider()
+            >>> cal = provider.calendar("2024-01-01", "2024-01-02", freq="1h")
+            >>> len(cal)
+            24
+        """
+        if freq not in self.SUPPORTED_FREQS:
+            raise ValueError(f"不支持的频率: {freq}, 支持: {list(self.SUPPORTED_FREQS.keys())}")
+
+        pd_freq = self.SUPPORTED_FREQS[freq]
+        start = pd.Timestamp(start_time)
+        end = pd.Timestamp(end_time)
+
+        # 生成连续时间序列 (24/7 无休市)
+        timestamps = pd.date_range(start=start, end=end, freq=pd_freq)
+
+        if not future:
+            now = pd.Timestamp.now()
+            timestamps = timestamps[timestamps <= now]
+
+        return timestamps.tolist()
+
+    def locate_index(
+        self,
+        start_time: Union[str, pd.Timestamp],
+        end_time: Union[str, pd.Timestamp],
+        freq: str = "1h",
+        future: bool = False,
+    ) -> tuple:
+        """
+        获取时间范围在日历中的索引位置
+
+        Args:
+            start_time: 开始时间
+            end_time: 结束时间
+            freq: 时间频率
+            future: 是否包含未来
+
+        Returns:
+            tuple: (start_index, end_index)
+        """
+        cal = self.calendar(start_time, end_time, freq, future)
+        return 0, len(cal) - 1
+```
+
+**instrument.py 完整实现**:
+
+```python
+"""
+加密货币品种提供者
+
+继承关系: CryptoInstrumentProvider -> InstrumentProvider
+引用路径: libs/qlib/qlib/data/data.py::InstrumentProvider
+"""
+from typing import List, Dict, Union
+import pandas as pd
+from qlib.data.data import InstrumentProvider
+
+class CryptoInstrumentProvider(InstrumentProvider):
+    """
+    加密货币交易品种管理
+
+    管理支持的加密货币交易对列表，提供品种筛选和查询功能。
+
+    Attributes:
+        DEFAULT_SYMBOLS: 默认支持的交易对列表
+    """
+
+    DEFAULT_SYMBOLS = [
+        "BTC-USDT", "ETH-USDT", "BNB-USDT", "SOL-USDT", "XRP-USDT",
+        "ADA-USDT", "DOGE-USDT", "AVAX-USDT", "DOT-USDT", "MATIC-USDT",
+        "LINK-USDT", "UNI-USDT", "ATOM-USDT", "LTC-USDT", "ETC-USDT",
+        "FIL-USDT", "APT-USDT", "ARB-USDT", "OP-USDT", "INJ-USDT",
+    ]
+
+    def __init__(self, symbols: List[str] = None):
+        """
+        初始化品种提供者
+
+        Args:
+            symbols: 自定义品种列表，None 则使用默认列表
+        """
+        super().__init__()
+        self.symbols = symbols or self.DEFAULT_SYMBOLS
+
+    def list_instruments(
+        self,
+        instruments: Union[str, List[str]] = None,
+        start_time: str = None,
+        end_time: str = None,
+        as_list: bool = False,
+    ) -> Union[Dict[str, tuple], List[str]]:
+        """
+        列出可用的交易品种
+
+        Args:
+            instruments: 品种筛选条件 (支持 "all", "top10", 或具体列表)
+            start_time: 开始时间 (加密货币无历史限制，可忽略)
+            end_time: 结束时间
+            as_list: 是否返回列表格式
+
+        Returns:
+            Union[Dict, List]: 品种信息字典或列表
+
+        Example:
+            >>> provider = CryptoInstrumentProvider()
+            >>> symbols = provider.list_instruments(instruments="top10", as_list=True)
+            >>> len(symbols)
+            10
+        """
+        if instruments == "all" or instruments is None:
+            selected = self.symbols
+        elif instruments == "top10":
+            selected = self.symbols[:10]
+        elif instruments == "top20":
+            selected = self.symbols[:20]
+        elif isinstance(instruments, list):
+            selected = [s for s in instruments if s in self.symbols]
+        else:
+            selected = self.symbols
+
+        if as_list:
+            return selected
+
+        # 返回 {symbol: (start_time, end_time)} 格式
+        return {s: (start_time, end_time) for s in selected}
+```
+
+**collector.py 完整实现**:
+
+```python
+"""
+币安永续合约数据收集器
+
+继承关系: BinancePerpetualCollector -> CryptoCollector
+引用路径: libs/qlib/scripts/data_collector/crypto/collector.py::CryptoCollector
+"""
+import os
+import time
+from typing import List, Optional
+from datetime import datetime
+import pandas as pd
+import requests
+from pathlib import Path
+
+# 尝试导入 Qlib 的 CryptoCollector，如果不存在则使用基类
+try:
+    from libs.qlib.scripts.data_collector.crypto.collector import CryptoCollector
+    BASE_CLASS = CryptoCollector
+except ImportError:
+    BASE_CLASS = object
+
+class BinancePerpetualCollector(BASE_CLASS):
+    """
+    币安永续合约 OHLCV 数据收集器
+
+    从币安 API 获取永续合约的 K 线数据，并转换为 Qlib 格式。
+
+    Attributes:
+        BASE_URL: 币安 API 基础 URL
+        INTERVALS: 支持的 K 线周期映射
+        RATE_LIMIT: API 请求间隔 (秒)
+    """
+
+    BASE_URL = "https://fapi.binance.com"
+
+    INTERVALS = {
+        "1min": "1m",
+        "5min": "5m",
+        "15min": "15m",
+        "30min": "30m",
+        "1h": "1h",
+        "4h": "4h",
+        "1d": "1d",
+    }
+
+    RATE_LIMIT = 0.1  # 100ms 间隔避免限速
+
+    def __init__(
+        self,
+        symbols: List[str],
+        interval: str = "1h",
+        output_dir: str = "./data/crypto",
+    ):
+        """
+        初始化收集器
+
+        Args:
+            symbols: 交易对列表 (格式: ["BTC-USDT", "ETH-USDT"])
+            interval: K 线周期
+            output_dir: 数据输出目录
+
+        Raises:
+            ValueError: 如果 interval 不支持
+        """
+        if interval not in self.INTERVALS:
+            raise ValueError(f"不支持的周期: {interval}")
+
+        self.symbols = symbols
+        self.interval = interval
+        self.binance_interval = self.INTERVALS[interval]
+        self.output_dir = Path(output_dir)
+        self.output_dir.mkdir(parents=True, exist_ok=True)
+
+    def _convert_symbol(self, symbol: str) -> str:
+        """
+        转换品种格式: BTC-USDT -> BTCUSDT
+        """
+        return symbol.replace("-", "")
+
+    def _fetch_klines(
+        self,
+        symbol: str,
+        start_time: int,
+        end_time: int,
+        limit: int = 1000,
+    ) -> List[list]:
+        """
+        从币安 API 获取 K 线数据
+
+        Args:
+            symbol: 币安格式的交易对 (如 BTCUSDT)
+            start_time: 开始时间戳 (毫秒)
+            end_time: 结束时间戳 (毫秒)
+            limit: 每次请求的数据条数 (最大 1500)
+
+        Returns:
+            List[list]: K 线数据列表
+        """
+        url = f"{self.BASE_URL}/fapi/v1/klines"
+        params = {
+            "symbol": symbol,
+            "interval": self.binance_interval,
+            "startTime": start_time,
+            "endTime": end_time,
+            "limit": limit,
+        }
+
+        response = requests.get(url, params=params, timeout=30)
+        response.raise_for_status()
+        return response.json()
+
+    def collect(
+        self,
+        start_date: str,
+        end_date: str,
+        show_progress: bool = True,
+    ) -> pd.DataFrame:
+        """
+        收集指定时间范围的数据
+
+        Args:
+            start_date: 开始日期 (格式: "2024-01-01")
+            end_date: 结束日期
+            show_progress: 是否显示进度
+
+        Returns:
+            pd.DataFrame: 包含所有品种数据的 DataFrame
+
+        Columns:
+            - datetime: 时间戳
+            - instrument: 品种代码
+            - open, high, low, close: OHLC 价格
+            - volume: 成交量
+            - amount: 成交额
+        """
+        start_ts = int(pd.Timestamp(start_date).timestamp() * 1000)
+        end_ts = int(pd.Timestamp(end_date).timestamp() * 1000)
+
+        all_data = []
+
+        for i, symbol in enumerate(self.symbols):
+            if show_progress:
+                print(f"收集 {symbol} ({i+1}/{len(self.symbols)})...")
+
+            binance_symbol = self._convert_symbol(symbol)
+            symbol_data = []
+            current_start = start_ts
+
+            while current_start < end_ts:
+                try:
+                    klines = self._fetch_klines(
+                        binance_symbol,
+                        current_start,
+                        end_ts,
+                        limit=1000,
+                    )
+
+                    if not klines:
+                        break
+
+                    for k in klines:
+                        symbol_data.append({
+                            "datetime": pd.Timestamp(k[0], unit="ms"),
+                            "instrument": symbol,
+                            "open": float(k[1]),
+                            "high": float(k[2]),
+                            "low": float(k[3]),
+                            "close": float(k[4]),
+                            "volume": float(k[5]),
+                            "amount": float(k[7]),  # Quote asset volume
+                        })
+
+                    # 更新起始时间为最后一条数据的时间 + 1
+                    current_start = klines[-1][0] + 1
+                    time.sleep(self.RATE_LIMIT)
+
+                except Exception as e:
+                    print(f"获取 {symbol} 数据失败: {e}")
+                    break
+
+            all_data.extend(symbol_data)
+
+        df = pd.DataFrame(all_data)
+        if not df.empty:
+            df = df.sort_values(["instrument", "datetime"]).reset_index(drop=True)
+
+        return df
+
+    def to_qlib_format(
+        self,
+        df: pd.DataFrame,
+        qlib_dir: str = None,
+    ) -> None:
+        """
+        将数据转换为 Qlib 二进制格式
+
+        Args:
+            df: 收集的原始数据 DataFrame
+            qlib_dir: Qlib 数据目录 (默认: output_dir/qlib_data)
+
+        生成文件结构:
+            qlib_dir/
+            ├── calendars/
+            │   └── crypto.txt
+            ├── instruments/
+            │   └── all.txt
+            └── features/
+                ├── BTC-USDT/
+                │   ├── open.bin
+                │   ├── high.bin
+                │   └── ...
+                └── ETH-USDT/
+                    └── ...
+        """
+        if qlib_dir is None:
+            qlib_dir = self.output_dir / "qlib_data"
+
+        qlib_dir = Path(qlib_dir)
+
+        # 创建目录结构
+        (qlib_dir / "calendars").mkdir(parents=True, exist_ok=True)
+        (qlib_dir / "instruments").mkdir(parents=True, exist_ok=True)
+        (qlib_dir / "features").mkdir(parents=True, exist_ok=True)
+
+        # 生成日历文件
+        calendar = df["datetime"].drop_duplicates().sort_values()
+        calendar_file = qlib_dir / "calendars" / "crypto.txt"
+        with open(calendar_file, "w") as f:
+            for dt in calendar:
+                f.write(dt.strftime("%Y-%m-%d %H:%M:%S") + "\n")
+
+        # 生成品种列表文件
+        instruments = df["instrument"].unique()
+        instruments_file = qlib_dir / "instruments" / "all.txt"
+        with open(instruments_file, "w") as f:
+            for inst in instruments:
+                start = df[df["instrument"] == inst]["datetime"].min()
+                end = df[df["instrument"] == inst]["datetime"].max()
+                f.write(f"{inst}\t{start.strftime('%Y-%m-%d')}\t{end.strftime('%Y-%m-%d')}\n")
+
+        # 生成特征文件 (简化版本，实际应使用 Qlib 的 dump_bin)
+        features = ["open", "high", "low", "close", "volume", "amount"]
+        for inst in instruments:
+            inst_dir = qlib_dir / "features" / inst
+            inst_dir.mkdir(parents=True, exist_ok=True)
+
+            inst_data = df[df["instrument"] == inst].set_index("datetime").sort_index()
+            for feat in features:
+                feat_file = inst_dir / f"{feat}.bin"
+                inst_data[feat].values.astype("float32").tofile(feat_file)
+
+        print(f"Qlib 数据已保存到: {qlib_dir}")
+```
+
+**handler.py 完整实现**:
+
+```python
+"""
+加密货币数据处理器
+
+继承关系: CryptoDataHandler -> Alpha158
+引用路径: libs/qlib/qlib/contrib/data/handler.py::Alpha158
+"""
+from typing import List, Dict, Any
+from qlib.contrib.data.handler import Alpha158
+from qlib.contrib.data.loader import Alpha158DL
+
+class CryptoAlpha158Config:
+    """Alpha158 加密货币配置"""
+
+    # 窗口模式
+    WINDOW_MODE = "compressed"  # "compressed" 或 "equivalent"
+
+    # 压缩窗口 (适合高频交易)
+    COMPRESSED_WINDOWS = [24, 48, 120, 168, 336]
+
+    # 等价窗口 (保持与日线相同的回溯天数)
+    EQUIVALENT_WINDOWS = [120, 240, 480, 720, 1440]
+
+    @classmethod
+    def get_windows(cls) -> List[int]:
+        """获取当前配置的窗口列表"""
+        if cls.WINDOW_MODE == "compressed":
+            return cls.COMPRESSED_WINDOWS
+        return cls.EQUIVALENT_WINDOWS
+
+
+class CryptoDataHandler(Alpha158):
+    """
+    加密货币 Alpha158 数据处理器
+
+    扩展 Qlib Alpha158，适配加密货币市场特性:
+    - 24/7 交易日历
+    - 小时级别数据
+    - 自定义窗口参数
+
+    Attributes:
+        CUSTOM_FACTORS: 加密货币特有因子
+    """
+
+    CUSTOM_FACTORS = [
+        "funding_rate",      # 资金费率
+        "open_interest",     # 持仓量
+        "long_short_ratio",  # 多空比
+    ]
+
+    def __init__(
+        self,
+        instruments: str = "all",
+        start_time: str = None,
+        end_time: str = None,
+        freq: str = "1h",
+        window_mode: str = "compressed",
+        include_custom_factors: bool = True,
+        **kwargs,
+    ):
+        """
+        初始化处理器
+
+        Args:
+            instruments: 品种范围
+            start_time: 开始时间
+            end_time: 结束时间
+            freq: 数据频率 (默认 1h)
+            window_mode: 窗口模式 ("compressed" 或 "equivalent")
+            include_custom_factors: 是否包含自定义因子
+            **kwargs: 传递给父类的其他参数
+        """
+        CryptoAlpha158Config.WINDOW_MODE = window_mode
+        self.include_custom_factors = include_custom_factors
+
+        super().__init__(
+            instruments=instruments,
+            start_time=start_time,
+            end_time=end_time,
+            freq=freq,
+            **kwargs,
+        )
+
+    @classmethod
+    def get_feature_config(cls) -> Dict[str, Any]:
+        """
+        获取特征配置
+
+        重写父类方法，使用加密货币适配的窗口参数
+
+        Returns:
+            Dict: 特征配置字典
+        """
+        windows = CryptoAlpha158Config.get_windows()
+
+        config = {
+            "price": {
+                "windows": [0, 1, 2, 3, 4],
+                "feature": ["open", "high", "low", "close"],
+            },
+            "volume": {
+                "windows": [0, 1, 2, 3, 4],
+            },
+            "rolling": {
+                "windows": windows,
+            },
+        }
+
+        return Alpha158DL.get_feature_config(config)
+```
+
+#### 5.3.2 回测层完整实现 (algvex/backtest/)
+
+**文件清单与依赖关系**:
+
+```
+algvex/backtest/
+├── __init__.py
+├── exchange.py          # CryptoExchange (依赖: qlib.backtest.exchange.Exchange)
+├── position.py          # PerpetualPosition (依赖: qlib.backtest.position.Position)
+├── executor.py          # CryptoExecutor (依赖: qlib.backtest.executor.SimulatorExecutor)
+└── funding.py           # FundingRateCalculator (独立模块)
+```
+
+**exchange.py 完整实现**:
+
+```python
+"""
+加密货币交易所模拟器
+
+继承关系: CryptoExchange -> Exchange
+引用路径: libs/qlib/qlib/backtest/exchange.py::Exchange
+"""
+from typing import Dict, Optional, Tuple
+from decimal import Decimal
+import pandas as pd
+from qlib.backtest.exchange import Exchange
+
+class MarginMode:
+    """保证金模式"""
+    CROSS = "cross"      # 全仓
+    ISOLATED = "isolated"  # 逐仓
+
+class PositionMode:
+    """持仓模式"""
+    ONE_WAY = "one_way"  # 单向持仓
+    HEDGE = "hedge"      # 双向持仓
+
+
+class CryptoExchange(Exchange):
+    """
+    加密货币交易所模拟
+
+    扩展 Qlib Exchange，支持:
+    - 杠杆交易 (1-125x)
+    - 永续合约
+    - 资金费率结算
+    - 强平机制
+
+    Attributes:
+        DEFAULT_LEVERAGE: 默认杠杆倍数
+        DEFAULT_MARGIN_MODE: 默认保证金模式
+        MAKER_FEE: Maker 手续费率
+        TAKER_FEE: Taker 手续费率
+    """
+
+    DEFAULT_LEVERAGE = 10
+    DEFAULT_MARGIN_MODE = MarginMode.CROSS
+    MAKER_FEE = Decimal("0.0002")  # 0.02%
+    TAKER_FEE = Decimal("0.0004")  # 0.04%
+    FUNDING_INTERVAL = 8  # 小时
+
+    def __init__(
+        self,
+        leverage: int = 10,
+        margin_mode: str = MarginMode.CROSS,
+        position_mode: str = PositionMode.ONE_WAY,
+        funding_interval: int = 8,
+        maintenance_margin_rate: float = 0.004,
+        **kwargs,
+    ):
+        """
+        初始化交易所模拟器
+
+        Args:
+            leverage: 杠杆倍数 (1-125)
+            margin_mode: 保证金模式 ("cross" 或 "isolated")
+            position_mode: 持仓模式 ("one_way" 或 "hedge")
+            funding_interval: 资金费率结算间隔 (小时)
+            maintenance_margin_rate: 维持保证金率
+            **kwargs: 传递给父类的参数
+
+        Raises:
+            ValueError: 杠杆倍数超出范围
+        """
+        if not 1 <= leverage <= 125:
+            raise ValueError(f"杠杆倍数必须在 1-125 之间，当前: {leverage}")
+
+        super().__init__(**kwargs)
+
+        self.leverage = leverage
+        self.margin_mode = margin_mode
+        self.position_mode = position_mode
+        self.funding_interval = funding_interval
+        self.maintenance_margin_rate = Decimal(str(maintenance_margin_rate))
+
+        # 资金费率历史
+        self._funding_rates: Dict[str, pd.DataFrame] = {}
+
+    def set_funding_rates(self, symbol: str, rates: pd.DataFrame) -> None:
+        """
+        设置品种的历史资金费率
+
+        Args:
+            symbol: 交易对
+            rates: 资金费率 DataFrame (index: datetime, columns: ["rate"])
+        """
+        self._funding_rates[symbol] = rates
+
+    def get_funding_rate(self, symbol: str, timestamp: pd.Timestamp) -> Decimal:
+        """
+        获取指定时间的资金费率
+
+        Args:
+            symbol: 交易对
+            timestamp: 时间戳
+
+        Returns:
+            Decimal: 资金费率 (如 0.0001 表示 0.01%)
+        """
+        if symbol not in self._funding_rates:
+            return Decimal("0.0001")  # 默认费率
+
+        rates = self._funding_rates[symbol]
+        if timestamp in rates.index:
+            return Decimal(str(rates.loc[timestamp, "rate"]))
+
+        # 找最近的费率
+        idx = rates.index.get_indexer([timestamp], method="ffill")[0]
+        if idx >= 0:
+            return Decimal(str(rates.iloc[idx]["rate"]))
+
+        return Decimal("0.0001")
+
+    def calculate_funding_fee(
+        self,
+        symbol: str,
+        position_value: Decimal,
+        funding_rate: Decimal,
+        is_long: bool,
+    ) -> Decimal:
+        """
+        计算资金费用
+
+        Args:
+            symbol: 交易对
+            position_value: 仓位价值 (数量 * 价格)
+            funding_rate: 资金费率
+            is_long: 是否多头
+
+        Returns:
+            Decimal: 资金费用 (正数为支付，负数为收取)
+
+        公式:
+            多头: funding_fee = position_value * funding_rate
+            空头: funding_fee = -position_value * funding_rate
+        """
+        fee = position_value * funding_rate
+        return fee if is_long else -fee
+
+    def calculate_liquidation_price(
+        self,
+        entry_price: Decimal,
+        leverage: int,
+        is_long: bool,
+        margin_mode: str = None,
+    ) -> Decimal:
+        """
+        计算强平价格
+
+        Args:
+            entry_price: 开仓价格
+            leverage: 杠杆倍数
+            is_long: 是否多头
+            margin_mode: 保证金模式 (默认使用实例配置)
+
+        Returns:
+            Decimal: 强平价格
+
+        公式 (全仓简化版):
+            多头: liquidation_price = entry_price * (1 - 1/leverage + mmr)
+            空头: liquidation_price = entry_price * (1 + 1/leverage - mmr)
+        """
+        margin_mode = margin_mode or self.margin_mode
+        mmr = self.maintenance_margin_rate
+
+        if is_long:
+            liq_price = entry_price * (1 - Decimal(1) / leverage + mmr)
+        else:
+            liq_price = entry_price * (1 + Decimal(1) / leverage - mmr)
+
+        return liq_price
+
+    def calculate_pnl(
+        self,
+        entry_price: Decimal,
+        exit_price: Decimal,
+        quantity: Decimal,
+        leverage: int,
+        is_long: bool,
+    ) -> Dict[str, Decimal]:
+        """
+        计算盈亏
+
+        Args:
+            entry_price: 开仓价格
+            exit_price: 平仓价格
+            quantity: 数量
+            leverage: 杠杆倍数
+            is_long: 是否多头
+
+        Returns:
+            Dict: 包含 pnl, roe, margin 的字典
+        """
+        position_value = entry_price * quantity
+        margin = position_value / leverage
+
+        if is_long:
+            pnl = (exit_price - entry_price) * quantity
+        else:
+            pnl = (entry_price - exit_price) * quantity
+
+        roe = pnl / margin if margin > 0 else Decimal(0)
+
+        return {
+            "pnl": pnl,
+            "roe": roe,
+            "margin": margin,
+            "position_value": position_value,
+        }
+```
+
+**funding.py 完整实现**:
+
+```python
+"""
+资金费率计算模块
+
+独立模块，不依赖 Qlib
+"""
+from typing import Optional, Tuple
+from decimal import Decimal
+from datetime import datetime, timedelta
+import pandas as pd
+
+
+class FundingRateCalculator:
+    """
+    资金费率计算器
+
+    实现资金费率的计算和结算逻辑。
+
+    资金费率公式:
+        Funding Rate = Average Premium Index + clamp(Interest Rate - Premium Index, -0.05%, 0.05%)
+
+    其中:
+        Premium Index = (Max(0, Impact Bid Price - Mark Price) - Max(0, Mark Price - Impact Ask Price)) / Mark Price
+        Interest Rate = (Quote Interest Rate - Base Interest Rate) / Funding Interval
+
+    Attributes:
+        DEFAULT_INTEREST_RATE: 默认利率 (通常为 0.03% / 天)
+        CLAMP_RANGE: 费率钳制范围
+    """
+
+    DEFAULT_INTEREST_RATE = Decimal("0.0001")  # 0.01%
+    CLAMP_RANGE = (Decimal("-0.0005"), Decimal("0.0005"))  # -0.05% ~ 0.05%
+    FUNDING_INTERVALS = [0, 8, 16]  # UTC 时间
+
+    @classmethod
+    def calculate_premium_index(
+        cls,
+        impact_bid: Decimal,
+        impact_ask: Decimal,
+        mark_price: Decimal,
+    ) -> Decimal:
+        """
+        计算溢价指数
+
+        Args:
+            impact_bid: 深度加权买一价
+            impact_ask: 深度加权卖一价
+            mark_price: 标记价格
+
+        Returns:
+            Decimal: 溢价指数
+        """
+        bid_premium = max(Decimal(0), impact_bid - mark_price)
+        ask_premium = max(Decimal(0), mark_price - impact_ask)
+        return (bid_premium - ask_premium) / mark_price
+
+    @classmethod
+    def calculate_funding_rate(
+        cls,
+        premium_index: Decimal,
+        interest_rate: Decimal = None,
+    ) -> Decimal:
+        """
+        计算资金费率
+
+        Args:
+            premium_index: 溢价指数
+            interest_rate: 利率差 (默认使用 DEFAULT_INTEREST_RATE)
+
+        Returns:
+            Decimal: 资金费率
+        """
+        interest_rate = interest_rate or cls.DEFAULT_INTEREST_RATE
+
+        # 钳制
+        diff = interest_rate - premium_index
+        clamped = max(cls.CLAMP_RANGE[0], min(cls.CLAMP_RANGE[1], diff))
+
+        return premium_index + clamped
+
+    @classmethod
+    def get_next_funding_time(cls, current_time: datetime) -> datetime:
+        """
+        获取下一个资金费率结算时间
+
+        Args:
+            current_time: 当前时间 (UTC)
+
+        Returns:
+            datetime: 下一个结算时间
+        """
+        current_hour = current_time.hour
+
+        for funding_hour in cls.FUNDING_INTERVALS:
+            if current_hour < funding_hour:
+                return current_time.replace(
+                    hour=funding_hour, minute=0, second=0, microsecond=0
+                )
+
+        # 下一天的 00:00
+        next_day = current_time + timedelta(days=1)
+        return next_day.replace(hour=0, minute=0, second=0, microsecond=0)
+
+    @classmethod
+    def is_funding_time(cls, timestamp: datetime) -> bool:
+        """
+        检查是否为资金费率结算时间
+
+        Args:
+            timestamp: 时间戳
+
+        Returns:
+            bool: 是否为结算时间
+        """
+        return (
+            timestamp.hour in cls.FUNDING_INTERVALS
+            and timestamp.minute == 0
+            and timestamp.second == 0
+        )
+```
+
+#### 5.3.3 信号桥完整实现 (algvex/bridge/)
+
+**文件清单与依赖关系**:
+
+```
+algvex/bridge/
+├── __init__.py
+├── converter.py         # SignalConverter (独立模块)
+├── redis_channel.py     # RedisSignalChannel (依赖: redis)
+└── mqtt_channel.py      # MQTTSignalChannel (依赖: hummingbot.remote_iface.mqtt)
+```
+
+**converter.py 完整实现**:
+
+```python
+"""
+Qlib 信号到 Hummingbot 订单转换器
+"""
+from dataclasses import dataclass, field
+from typing import List, Dict, Optional
+from enum import Enum
+from decimal import Decimal
+import pandas as pd
+
+
+class OrderSide(str, Enum):
+    """订单方向"""
+    BUY = "BUY"
+    SELL = "SELL"
+
+
+class OrderType(str, Enum):
+    """订单类型"""
+    MARKET = "MARKET"
+    LIMIT = "LIMIT"
+    STOP_MARKET = "STOP_MARKET"
+    TAKE_PROFIT_MARKET = "TAKE_PROFIT_MARKET"
+
+
+@dataclass
+class TradingSignal:
+    """
+    交易信号数据类
+
+    Attributes:
+        symbol: 交易对 (如 "BTC-USDT")
+        side: 订单方向 (BUY/SELL)
+        amount: 交易数量
+        score: 模型预测分数 (用于排序和分配仓位)
+        price: 限价单价格 (市价单为 None)
+        order_type: 订单类型
+        leverage: 杠杆倍数
+        stop_loss: 止损价格
+        take_profit: 止盈价格
+    """
+    symbol: str
+    side: OrderSide
+    amount: Decimal
+    score: float = 0.0
+    price: Optional[Decimal] = None
+    order_type: OrderType = OrderType.MARKET
+    leverage: int = 10
+    stop_loss: Optional[Decimal] = None
+    take_profit: Optional[Decimal] = None
+
+    def to_dict(self) -> Dict:
+        """转换为字典格式"""
+        return {
+            "symbol": self.symbol,
+            "side": self.side.value,
+            "amount": str(self.amount),
+            "score": self.score,
+            "price": str(self.price) if self.price else None,
+            "order_type": self.order_type.value,
+            "leverage": self.leverage,
+            "stop_loss": str(self.stop_loss) if self.stop_loss else None,
+            "take_profit": str(self.take_profit) if self.take_profit else None,
+        }
+
+
+class SignalConverter:
+    """
+    Qlib 预测信号转换器
+
+    将 Qlib 模型的预测结果转换为可执行的交易信号。
+
+    Attributes:
+        long_threshold: 做多阈值 (score > threshold)
+        short_threshold: 做空阈值 (score < -threshold)
+        max_positions: 最大持仓数量
+        position_size_mode: 仓位分配模式
+    """
+
+    def __init__(
+        self,
+        long_threshold: float = 0.0,
+        short_threshold: float = 0.0,
+        max_positions: int = 10,
+        position_size_mode: str = "equal",  # "equal", "score_weighted", "volatility_adjusted"
+        total_capital: Decimal = Decimal("10000"),
+        default_leverage: int = 10,
+    ):
+        """
+        初始化转换器
+
+        Args:
+            long_threshold: 做多阈值
+            short_threshold: 做空阈值 (使用负值)
+            max_positions: 最大同时持仓数
+            position_size_mode: 仓位大小计算模式
+            total_capital: 总资金
+            default_leverage: 默认杠杆
+        """
+        self.long_threshold = long_threshold
+        self.short_threshold = short_threshold
+        self.max_positions = max_positions
+        self.position_size_mode = position_size_mode
+        self.total_capital = total_capital
+        self.default_leverage = default_leverage
+
+    def convert(
+        self,
+        predictions: pd.DataFrame,
+        current_prices: Dict[str, Decimal] = None,
+    ) -> List[TradingSignal]:
+        """
+        转换 Qlib 预测结果为交易信号
+
+        Args:
+            predictions: Qlib 预测 DataFrame
+                格式: MultiIndex (datetime, instrument) -> score
+                或 columns: ["instrument", "score"]
+            current_prices: 当前价格字典 {symbol: price}
+
+        Returns:
+            List[TradingSignal]: 交易信号列表
+
+        Example:
+            >>> converter = SignalConverter(long_threshold=0.02)
+            >>> predictions = pd.DataFrame({
+            ...     "instrument": ["BTC-USDT", "ETH-USDT"],
+            ...     "score": [0.05, -0.03]
+            ... })
+            >>> signals = converter.convert(predictions)
+            >>> len(signals)
+            2
+        """
+        signals = []
+        current_prices = current_prices or {}
+
+        # 标准化输入格式
+        if isinstance(predictions.index, pd.MultiIndex):
+            df = predictions.reset_index()
+            df.columns = ["datetime", "instrument", "score"]
+        else:
+            df = predictions.copy()
+
+        # 筛选信号
+        long_candidates = df[df["score"] > self.long_threshold].nlargest(
+            self.max_positions, "score"
+        )
+        short_candidates = df[df["score"] < -abs(self.short_threshold)].nsmallest(
+            self.max_positions, "score"
+        )
+
+        # 计算仓位大小
+        total_signals = len(long_candidates) + len(short_candidates)
+        if total_signals == 0:
+            return signals
+
+        position_value = self.total_capital / Decimal(min(total_signals, self.max_positions))
+
+        # 生成多头信号
+        for _, row in long_candidates.iterrows():
+            symbol = row["instrument"]
+            score = row["score"]
+            price = current_prices.get(symbol, Decimal("1"))
+
+            amount = self._calculate_amount(position_value, price, score)
+
+            signals.append(TradingSignal(
+                symbol=symbol,
+                side=OrderSide.BUY,
+                amount=amount,
+                score=score,
+                leverage=self.default_leverage,
+            ))
+
+        # 生成空头信号
+        for _, row in short_candidates.iterrows():
+            symbol = row["instrument"]
+            score = row["score"]
+            price = current_prices.get(symbol, Decimal("1"))
+
+            amount = self._calculate_amount(position_value, price, abs(score))
+
+            signals.append(TradingSignal(
+                symbol=symbol,
+                side=OrderSide.SELL,
+                amount=amount,
+                score=score,
+                leverage=self.default_leverage,
+            ))
+
+        return signals
+
+    def _calculate_amount(
+        self,
+        position_value: Decimal,
+        price: Decimal,
+        score: float,
+    ) -> Decimal:
+        """
+        计算交易数量
+
+        Args:
+            position_value: 分配的仓位价值
+            price: 当前价格
+            score: 预测分数
+
+        Returns:
+            Decimal: 交易数量
+        """
+        if self.position_size_mode == "equal":
+            return position_value / price
+        elif self.position_size_mode == "score_weighted":
+            weight = Decimal(str(min(abs(score) * 10, 2.0)))  # 最大 2 倍
+            return (position_value * weight) / price
+        else:
+            return position_value / price
+```
+
+**redis_channel.py 完整实现**:
+
+```python
+"""
+Redis 信号通道
+
+用于 Qlib 和 Hummingbot 之间的实时信号传递
+"""
+import json
+from typing import List, Optional, Callable
+from dataclasses import asdict
+import redis
+
+from .converter import TradingSignal
+
+
+class RedisSignalChannel:
+    """
+    Redis 信号通道
+
+    使用 Redis Pub/Sub 实现 Qlib 信号到 Hummingbot 的实时传递。
+
+    Channels:
+        - algvex:signals: 交易信号发布通道
+        - algvex:status: 系统状态通道
+        - algvex:commands: 控制命令通道
+
+    Attributes:
+        SIGNAL_CHANNEL: 信号发布通道名
+        STATUS_CHANNEL: 状态通道名
+        COMMAND_CHANNEL: 命令通道名
+    """
+
+    SIGNAL_CHANNEL = "algvex:signals"
+    STATUS_CHANNEL = "algvex:status"
+    COMMAND_CHANNEL = "algvex:commands"
+
+    def __init__(
+        self,
+        host: str = "localhost",
+        port: int = 6379,
+        db: int = 0,
+        password: str = None,
+    ):
+        """
+        初始化 Redis 连接
+
+        Args:
+            host: Redis 主机地址
+            port: Redis 端口
+            db: Redis 数据库编号
+            password: Redis 密码 (可选)
+        """
+        self.redis = redis.Redis(
+            host=host,
+            port=port,
+            db=db,
+            password=password,
+            decode_responses=True,
+        )
+        self.pubsub = None
+
+    def publish_signals(self, signals: List[TradingSignal]) -> int:
+        """
+        发布交易信号
+
+        Args:
+            signals: 交易信号列表
+
+        Returns:
+            int: 接收到消息的订阅者数量
+        """
+        message = {
+            "type": "signals",
+            "data": [s.to_dict() for s in signals],
+        }
+        return self.redis.publish(self.SIGNAL_CHANNEL, json.dumps(message))
+
+    def publish_status(self, status: dict) -> int:
+        """
+        发布系统状态
+
+        Args:
+            status: 状态信息字典
+
+        Returns:
+            int: 接收到消息的订阅者数量
+        """
+        message = {
+            "type": "status",
+            "data": status,
+        }
+        return self.redis.publish(self.STATUS_CHANNEL, json.dumps(message))
+
+    def subscribe(
+        self,
+        on_signal: Callable[[List[dict]], None] = None,
+        on_status: Callable[[dict], None] = None,
+        on_command: Callable[[dict], None] = None,
+    ) -> None:
+        """
+        订阅消息通道
+
+        Args:
+            on_signal: 信号回调函数
+            on_status: 状态回调函数
+            on_command: 命令回调函数
+        """
+        self.pubsub = self.redis.pubsub()
+
+        channels = []
+        if on_signal:
+            channels.append(self.SIGNAL_CHANNEL)
+        if on_status:
+            channels.append(self.STATUS_CHANNEL)
+        if on_command:
+            channels.append(self.COMMAND_CHANNEL)
+
+        self.pubsub.subscribe(*channels)
+
+        for message in self.pubsub.listen():
+            if message["type"] != "message":
+                continue
+
+            data = json.loads(message["data"])
+            channel = message["channel"]
+
+            if channel == self.SIGNAL_CHANNEL and on_signal:
+                on_signal(data["data"])
+            elif channel == self.STATUS_CHANNEL and on_status:
+                on_status(data["data"])
+            elif channel == self.COMMAND_CHANNEL and on_command:
+                on_command(data["data"])
+
+    def close(self) -> None:
+        """关闭连接"""
+        if self.pubsub:
+            self.pubsub.close()
+        self.redis.close()
+```
+
+#### 5.3.4 执行层完整实现 (algvex/execution/)
+
+**文件清单**:
+
+```
+algvex/execution/
+├── __init__.py
+├── manager.py           # ExecutorManager (依赖: hummingbot.strategy_v2.executors)
+└── router.py            # OrderRouter (独立模块)
+```
+
+**manager.py 核心接口**:
+
+```python
+"""
+执行器管理器
+
+集成 Hummingbot 的 7 个执行器
+"""
+from typing import Dict, Type, Optional
+from enum import Enum
+
+# Hummingbot 执行器导入
+from hummingbot.strategy_v2.executors.order_executor.order_executor import OrderExecutor
+from hummingbot.strategy_v2.executors.position_executor.position_executor import PositionExecutor
+from hummingbot.strategy_v2.executors.dca_executor.dca_executor import DCAExecutor
+from hummingbot.strategy_v2.executors.twap_executor.twap_executor import TWAPExecutor
+from hummingbot.strategy_v2.executors.grid_executor.grid_executor import GridExecutor
+from hummingbot.strategy_v2.executors.arbitrage_executor.arbitrage_executor import ArbitrageExecutor
+from hummingbot.strategy_v2.executors.xemm_executor.xemm_executor import XEMMExecutor
+
+
+class ExecutorType(str, Enum):
+    """执行器类型"""
+    ORDER = "order"
+    POSITION = "position"
+    DCA = "dca"
+    TWAP = "twap"
+    GRID = "grid"
+    ARBITRAGE = "arbitrage"
+    XEMM = "xemm"
+
+
+class ExecutorManager:
+    """
+    执行器管理器
+
+    统一管理 Hummingbot 的 7 种执行器，根据信号类型自动选择合适的执行器。
+
+    Executors:
+        - OrderExecutor: 单订单执行
+        - PositionExecutor: 仓位执行 (Triple Barrier)
+        - DCAExecutor: 定投执行
+        - TWAPExecutor: 时间加权均价
+        - GridExecutor: 网格执行
+        - ArbitrageExecutor: 套利执行
+        - XEMMExecutor: 跨交易所做市
+    """
+
+    EXECUTOR_CLASSES: Dict[ExecutorType, Type] = {
+        ExecutorType.ORDER: OrderExecutor,
+        ExecutorType.POSITION: PositionExecutor,
+        ExecutorType.DCA: DCAExecutor,
+        ExecutorType.TWAP: TWAPExecutor,
+        ExecutorType.GRID: GridExecutor,
+        ExecutorType.ARBITRAGE: ArbitrageExecutor,
+        ExecutorType.XEMM: XEMMExecutor,
+    }
+
+    def __init__(self, connector, default_executor: ExecutorType = ExecutorType.POSITION):
+        """
+        初始化管理器
+
+        Args:
+            connector: Hummingbot 连接器实例
+            default_executor: 默认执行器类型
+        """
+        self.connector = connector
+        self.default_executor = default_executor
+        self._executors: Dict[str, object] = {}
+
+    def get_executor(self, executor_type: ExecutorType = None):
+        """
+        获取执行器实例
+
+        Args:
+            executor_type: 执行器类型
+
+        Returns:
+            执行器实例
+        """
+        executor_type = executor_type or self.default_executor
+
+        if executor_type.value not in self._executors:
+            executor_class = self.EXECUTOR_CLASSES[executor_type]
+            self._executors[executor_type.value] = executor_class(
+                strategy=self,
+                connector=self.connector,
+            )
+
+        return self._executors[executor_type.value]
+```
+
+#### 5.3.5 风控层完整实现 (algvex/risk/)
+
+**文件清单**:
+
+```
+algvex/risk/
+├── __init__.py
+├── kill_switch.py       # KillSwitch (独立模块)
+├── position_limit.py    # PositionLimitChecker (独立模块)
+└── liquidation.py       # LiquidationMonitor (依赖: algvex.backtest.exchange)
+```
+
+**kill_switch.py 完整实现**:
+
+```python
+"""
+紧急停止开关
+
+当满足预设条件时立即停止所有交易活动
+"""
+from typing import Callable, Optional
+from decimal import Decimal
+from datetime import datetime, timedelta
+from enum import Enum
+import logging
+
+logger = logging.getLogger(__name__)
+
+
+class KillSwitchReason(str, Enum):
+    """触发原因"""
+    MAX_LOSS = "max_loss"
+    MAX_DRAWDOWN = "max_drawdown"
+    POSITION_LIMIT = "position_limit"
+    API_ERROR = "api_error"
+    MANUAL = "manual"
+    TIME_LIMIT = "time_limit"
+
+
+class KillSwitch:
+    """
+    紧急停止开关
+
+    监控以下条件并在触发时停止交易:
+    - 最大亏损金额/比例
+    - 最大回撤
+    - 持仓超限
+    - API 连续错误
+    - 交易时间限制
+
+    Attributes:
+        is_triggered: 是否已触发
+        trigger_reason: 触发原因
+        trigger_time: 触发时间
+    """
+
+    def __init__(
+        self,
+        max_loss_pct: float = 0.1,
+        max_loss_amount: Decimal = None,
+        max_drawdown_pct: float = 0.15,
+        max_position_value: Decimal = None,
+        max_api_errors: int = 10,
+        trading_hours: tuple = None,
+        on_trigger: Callable[["KillSwitch", KillSwitchReason], None] = None,
+    ):
+        """
+        初始化 Kill Switch
+
+        Args:
+            max_loss_pct: 最大亏损比例 (0.1 = 10%)
+            max_loss_amount: 最大亏损金额
+            max_drawdown_pct: 最大回撤比例
+            max_position_value: 最大持仓价值
+            max_api_errors: 最大连续 API 错误次数
+            trading_hours: 允许交易时间 (start_hour, end_hour)
+            on_trigger: 触发回调函数
+        """
+        self.max_loss_pct = Decimal(str(max_loss_pct))
+        self.max_loss_amount = max_loss_amount
+        self.max_drawdown_pct = Decimal(str(max_drawdown_pct))
+        self.max_position_value = max_position_value
+        self.max_api_errors = max_api_errors
+        self.trading_hours = trading_hours
+        self.on_trigger = on_trigger
+
+        # 状态
+        self.is_triggered = False
+        self.trigger_reason: Optional[KillSwitchReason] = None
+        self.trigger_time: Optional[datetime] = None
+
+        # 追踪数据
+        self._initial_capital: Optional[Decimal] = None
+        self._peak_value: Optional[Decimal] = None
+        self._api_error_count = 0
+
+    def initialize(self, initial_capital: Decimal) -> None:
+        """
+        初始化资金追踪
+
+        Args:
+            initial_capital: 初始资金
+        """
+        self._initial_capital = initial_capital
+        self._peak_value = initial_capital
+
+    def check(
+        self,
+        current_value: Decimal,
+        position_value: Decimal = Decimal(0),
+        has_api_error: bool = False,
+    ) -> bool:
+        """
+        检查是否应触发 Kill Switch
+
+        Args:
+            current_value: 当前账户价值
+            position_value: 当前持仓价值
+            has_api_error: 是否发生 API 错误
+
+        Returns:
+            bool: 是否触发
+        """
+        if self.is_triggered:
+            return True
+
+        # 更新峰值
+        if current_value > self._peak_value:
+            self._peak_value = current_value
+
+        # 检查最大亏损
+        if self._initial_capital:
+            loss_pct = (self._initial_capital - current_value) / self._initial_capital
+            if loss_pct > self.max_loss_pct:
+                return self._trigger(KillSwitchReason.MAX_LOSS)
+
+            if self.max_loss_amount and (self._initial_capital - current_value) > self.max_loss_amount:
+                return self._trigger(KillSwitchReason.MAX_LOSS)
+
+        # 检查最大回撤
+        if self._peak_value:
+            drawdown = (self._peak_value - current_value) / self._peak_value
+            if drawdown > self.max_drawdown_pct:
+                return self._trigger(KillSwitchReason.MAX_DRAWDOWN)
+
+        # 检查持仓限制
+        if self.max_position_value and position_value > self.max_position_value:
+            return self._trigger(KillSwitchReason.POSITION_LIMIT)
+
+        # 检查 API 错误
+        if has_api_error:
+            self._api_error_count += 1
+            if self._api_error_count >= self.max_api_errors:
+                return self._trigger(KillSwitchReason.API_ERROR)
+        else:
+            self._api_error_count = 0
+
+        # 检查交易时间
+        if self.trading_hours:
+            current_hour = datetime.utcnow().hour
+            start, end = self.trading_hours
+            if not (start <= current_hour < end):
+                return self._trigger(KillSwitchReason.TIME_LIMIT)
+
+        return False
+
+    def _trigger(self, reason: KillSwitchReason) -> bool:
+        """触发 Kill Switch"""
+        self.is_triggered = True
+        self.trigger_reason = reason
+        self.trigger_time = datetime.utcnow()
+
+        logger.critical(f"Kill Switch 触发! 原因: {reason.value}")
+
+        if self.on_trigger:
+            self.on_trigger(self, reason)
+
+        return True
+
+    def reset(self) -> None:
+        """重置 Kill Switch"""
+        self.is_triggered = False
+        self.trigger_reason = None
+        self.trigger_time = None
+        self._api_error_count = 0
+        logger.info("Kill Switch 已重置")
+```
+
 ---
 
 ## 六、实施阶段
@@ -511,13 +2107,25 @@ def test_data_collector():
 
 **CryptoAlpha158 窗口适配**:
 
-| 原始窗口 (日线) | 适配窗口 (小时线) | 说明 |
-|----------------|-------------------|------|
-| 5 | 24 | 1 天 |
-| 10 | 48 | 2 天 |
-| 20 | 120 | 5 天 |
-| 30 | 168 | 7 天 |
-| 60 | 336 | 14 天 |
+> **设计原则**: 加密货币市场节奏比传统股市更快，因此采用**时间压缩**策略。
+> 原始 Alpha158 使用 5/10/20/30/60 天窗口，这里压缩为 1/2/5/7/14 天对应的小时数。
+> 如需保持原始等价性，可使用 `windows = [w * 24 for w in [5, 10, 20, 30, 60]]`。
+
+| 原始窗口 (日线) | 适配窗口 (小时线) | 等价天数 | 压缩比 |
+|----------------|-------------------|----------|--------|
+| 5 days | 24 hours | 1 天 | 5:1 |
+| 10 days | 48 hours | 2 天 | 5:1 |
+| 20 days | 120 hours | 5 天 | 4:1 |
+| 30 days | 168 hours | 7 天 | 4.3:1 |
+| 60 days | 336 hours | 14 天 | 4.3:1 |
+
+```python
+# algvex/factors/alpha158.py 配置选项
+WINDOW_MODE = "compressed"  # "compressed" 或 "equivalent"
+
+COMPRESSED_WINDOWS = [24, 48, 120, 168, 336]  # 压缩模式 (默认)
+EQUIVALENT_WINDOWS = [120, 240, 480, 720, 1440]  # 等价模式 (5*24, 10*24, ...)
+```
 
 ### 阶段 4: 回测层开发
 
@@ -550,8 +2158,8 @@ def test_data_collector():
 | 5.1 | 验证传统 ML 模型 (5) | 训练数据 | 测试报告 | IC > 0.02 |
 | 5.2 | 验证 RNN 模型 (12) | 训练数据 | 测试报告 | IC > 0.02 |
 | 5.3 | 验证 Transformer 模型 (4) | 训练数据 | 测试报告 | IC > 0.02 |
-| 5.4 | 验证 CNN 模型 (4) | 训练数据 | 测试报告 | IC > 0.02 |
-| 5.5 | 验证高级模型 (6) | 训练数据 | 测试报告 | IC > 0.02 |
+| 5.4 | 验证 CNN 模型 (3) | 训练数据 | 测试报告 | IC > 0.02 |
+| 5.5 | 验证高级模型 (8) | 训练数据 | 测试报告 | IC > 0.02 |
 | 5.6 | 模型对比报告 | 所有结果 | 报告文档 | 选出最优模型 |
 
 **模型验证流程**:
@@ -922,7 +2530,7 @@ tail -f /opt/algvex/logs/qlib.log
 |------|----------|
 | 数据层 | 成功收集 BTC-USDT 1小时数据 >= 1年 |
 | 因子层 | Alpha158 全部 158 因子计算正确 |
-| 模型层 | 31 个模型全部可训练 |
+| 模型层 | 32 个模型全部可训练 |
 | 回测层 | 回测 IC > 0.02, 无计算错误 |
 | 信号桥 | Qlib 信号成功传递到 Hummingbot |
 | 执行层 | 7 个执行器全部可用 |
@@ -966,6 +2574,7 @@ tail -f /opt/algvex/logs/qlib.log
 
 ---
 
-**文档版本**: 2.0
+**文档版本**: 2.1
 **创建日期**: 2025-12-31
 **更新日期**: 2025-12-31
+**更新内容**: 修复模型计数错误 (31→32), 修正 VWAPExecutor 描述, 补充 Alpha158 窗口适配说明, 添加 5.3 节详细实现规范
