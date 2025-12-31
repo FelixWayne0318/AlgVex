@@ -1,6 +1,6 @@
 # AlgVex 执行方案
 
-> **版本**: 4.3
+> **版本**: 4.4
 > **日期**: 2025-12-31
 > **目标**: 基于 Qlib v0.9.7 + Hummingbot v2.11.0 构建加密货币量化交易系统
 
@@ -85,7 +85,7 @@
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────┐
-│                          AlgVex Platform v4.3                            │
+│                          AlgVex Platform v4.4                            │
 ├─────────────────────────────────────────────────────────────────────────┤
 │                                                                          │
 │  ┌───────────────────────────┐       ┌───────────────────────────┐      │
@@ -408,17 +408,20 @@ AlgVex/
 """
 import pandas as pd
 from pathlib import Path
-from datetime import datetime
-from typing import List
+from typing import List, Iterator
 import requests
 import time
+import logging
+
+logger = logging.getLogger(__name__)
 
 
 class BinancePerpetualCollector:
     """币安永续合约数据收集器"""
 
     BASE_URL = "https://fapi.binance.com"
-    RATE_LIMIT = 0.1  # 100ms
+    RATE_LIMIT = 0.1  # 100ms between requests
+    MAX_LIMIT = 1000  # Binance API 单次最大返回条数
 
     def __init__(self, output_dir: str = "./data/raw"):
         self.output_dir = Path(output_dir)
@@ -434,6 +437,8 @@ class BinancePerpetualCollector:
         """
         收集数据并保存为 Parquet
 
+        注意: 自动分页获取完整数据，不受 1000 条限制
+
         Returns:
             Path: 保存的文件路径
         """
@@ -441,11 +446,14 @@ class BinancePerpetualCollector:
 
         for symbol in symbols:
             binance_symbol = symbol.replace("-", "")
-            data = self._fetch_klines(binance_symbol, start_date, end_date, interval)
+            logger.info(f"Fetching {symbol} from {start_date} to {end_date}")
 
-            for row in data:
+            # 使用分页迭代器获取完整数据
+            for row in self._fetch_klines_paginated(
+                binance_symbol, start_date, end_date, interval
+            ):
                 all_data.append({
-                    # 统一使用 UTC 时区
+                    # 统一使用 UTC 时区，以 open_time 为锚点
                     "date": pd.Timestamp(row[0], unit="ms", tz="UTC"),
                     "symbol": symbol,
                     "open": float(row[1]),
@@ -456,25 +464,64 @@ class BinancePerpetualCollector:
                     "amount": float(row[7]),
                 })
 
-            time.sleep(self.RATE_LIMIT)
+            logger.info(f"Fetched {len(all_data)} rows for {symbol}")
 
         df = pd.DataFrame(all_data)
+
+        # 去重 (按 symbol + date)，保留最新
+        df = df.drop_duplicates(subset=["symbol", "date"], keep="last")
+        df = df.sort_values(["symbol", "date"]).reset_index(drop=True)
 
         # 保存为 Parquet (不是 Qlib 格式!)
         output_file = self.output_dir / f"crypto_{interval}_{start_date}_{end_date}.parquet"
         df.to_parquet(output_file, index=False)
 
+        logger.info(f"Saved {len(df)} rows to {output_file}")
         return output_file
 
-    def _fetch_klines(self, symbol: str, start: str, end: str, interval: str) -> list:
-        """从币安 API 获取 K 线"""
+    def _fetch_klines_paginated(
+        self, symbol: str, start: str, end: str, interval: str
+    ) -> Iterator[list]:
+        """
+        分页获取 K 线数据 (解决 1000 条限制)
+
+        Yields:
+            list: 每条 K 线原始数据
+        """
+        start_ms = int(pd.Timestamp(start, tz="UTC").timestamp() * 1000)
+        end_ms = int(pd.Timestamp(end, tz="UTC").timestamp() * 1000)
+        current_start = start_ms
+
+        while current_start < end_ms:
+            data = self._fetch_klines_batch(symbol, current_start, end_ms, interval)
+
+            if not data:
+                break  # 无更多数据
+
+            for row in data:
+                yield row
+
+            # 下一页起点 = 最后一条的 open_time + 1ms
+            last_open_time = data[-1][0]
+            current_start = last_open_time + 1
+
+            # 如果返回不足 1000 条，说明已到末尾
+            if len(data) < self.MAX_LIMIT:
+                break
+
+            time.sleep(self.RATE_LIMIT)
+
+    def _fetch_klines_batch(
+        self, symbol: str, start_ms: int, end_ms: int, interval: str
+    ) -> list:
+        """从币安 API 获取单批次 K 线 (最多 1000 条)"""
         url = f"{self.BASE_URL}/fapi/v1/klines"
         params = {
             "symbol": symbol,
             "interval": interval,
-            "startTime": int(pd.Timestamp(start, tz="UTC").timestamp() * 1000),
-            "endTime": int(pd.Timestamp(end, tz="UTC").timestamp() * 1000),
-            "limit": 1000,
+            "startTime": start_ms,
+            "endTime": end_ms,
+            "limit": self.MAX_LIMIT,
         }
         response = requests.get(url, params=params, timeout=30)
         response.raise_for_status()
@@ -668,15 +715,80 @@ class SignalPublisher:
 信号消费者 - MQTT + Readiness Gate + 幂等
 
 这是信号桥的核心实现，包含生产级可靠性保障
+
+关键设计:
+1. 使用队列桥接 MQTT 回调线程和 asyncio 事件循环
+2. 使用 SQLite 持久化幂等状态，重启不丢失
+3. MQTT QoS 1 + 幂等 = 恰好一次语义
 """
 import asyncio
 import json
 import logging
-from typing import Dict, Optional, Set
+import queue
+import sqlite3
+import threading
+from pathlib import Path
+from typing import Dict, Optional
 from datetime import datetime, timedelta, timezone
 import paho.mqtt.client as mqtt
 
 logger = logging.getLogger(__name__)
+
+
+class IdempotencyStore:
+    """
+    幂等存储 (SQLite)
+
+    使用 SQLite 持久化 signal_id，重启后状态不丢失。
+    自动清理过期记录 (默认保留 24 小时)。
+    """
+
+    def __init__(self, db_path: str = "/data/idempotency/signals.db", ttl_hours: int = 24):
+        self.db_path = Path(db_path)
+        self.db_path.parent.mkdir(parents=True, exist_ok=True)
+        self.ttl_hours = ttl_hours
+        self._init_db()
+
+    def _init_db(self):
+        """初始化数据库"""
+        with sqlite3.connect(self.db_path) as conn:
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS processed_signals (
+                    signal_id TEXT PRIMARY KEY,
+                    processed_at TEXT NOT NULL
+                )
+            """)
+            conn.execute("""
+                CREATE INDEX IF NOT EXISTS idx_processed_at
+                ON processed_signals(processed_at)
+            """)
+
+    def is_duplicate(self, signal_id: str) -> bool:
+        """检查是否重复"""
+        with sqlite3.connect(self.db_path) as conn:
+            cursor = conn.execute(
+                "SELECT 1 FROM processed_signals WHERE signal_id = ?",
+                (signal_id,)
+            )
+            return cursor.fetchone() is not None
+
+    def mark_processed(self, signal_id: str):
+        """标记已处理"""
+        now = datetime.now(timezone.utc).isoformat()
+        with sqlite3.connect(self.db_path) as conn:
+            conn.execute(
+                "INSERT OR REPLACE INTO processed_signals (signal_id, processed_at) VALUES (?, ?)",
+                (signal_id, now)
+            )
+
+    def cleanup_expired(self):
+        """清理过期记录"""
+        cutoff = (datetime.now(timezone.utc) - timedelta(hours=self.ttl_hours)).isoformat()
+        with sqlite3.connect(self.db_path) as conn:
+            conn.execute(
+                "DELETE FROM processed_signals WHERE processed_at < ?",
+                (cutoff,)
+            )
 
 
 class SignalConsumer:
@@ -686,8 +798,8 @@ class SignalConsumer:
     关键特性:
     1. MQTT QoS 1 (至少一次)
     2. Connector Readiness Gate
-    3. 幂等去重
-    4. 异步执行
+    3. SQLite 持久化幂等 (重启安全)
+    4. 队列桥接实现线程安全的 asyncio 调用
     """
 
     TOPIC = "algvex/signals"
@@ -698,6 +810,7 @@ class SignalConsumer:
         broker_port: int,
         connector,  # Hummingbot connector
         executor,   # Hummingbot executor
+        idempotency_db: str = "/data/idempotency/signals.db",
     ):
         self.broker_host = broker_host
         self.broker_port = broker_port
@@ -709,58 +822,124 @@ class SignalConsumer:
         self.client.on_connect = self._on_connect
         self.client.on_message = self._on_message
 
-        # 幂等去重: 已处理的 signal_id
-        self._processed_ids: Set[str] = set()
-        self._processed_ids_ttl: Dict[str, datetime] = {}
+        # 幂等存储 (SQLite 持久化)
+        self.idempotency = IdempotencyStore(idempotency_db)
+
+        # 信号队列 (MQTT 回调线程 -> asyncio 工作线程)
+        self._signal_queue: queue.Queue = queue.Queue()
+
+        # asyncio 事件循环 (在独立线程运行)
+        self._loop: Optional[asyncio.AbstractEventLoop] = None
+        self._loop_thread: Optional[threading.Thread] = None
 
         # 就绪状态
         self._connector_ready = False
+        self._running = False
 
     def start(self):
-        """启动消费者 (阻塞)"""
+        """启动消费者"""
         # 1. 等待 Connector 就绪
         self._wait_for_connector_ready()
 
-        # 2. 连接 MQTT
-        self.client.connect(self.broker_host, self.broker_port, keepalive=60)
+        # 2. 启动 asyncio 工作线程
+        self._start_async_worker()
 
+        # 3. 连接 MQTT
+        self.client.connect(self.broker_host, self.broker_port, keepalive=60)
         logger.info("SignalConsumer started")
 
-        # 3. 阻塞运行
+        # 4. 阻塞运行 MQTT 循环
+        self._running = True
         self.client.loop_forever()
+
+    def stop(self):
+        """停止消费者"""
+        self._running = False
+        self.client.disconnect()
+        if self._loop:
+            self._loop.call_soon_threadsafe(self._loop.stop)
+
+    def _start_async_worker(self):
+        """启动 asyncio 工作线程"""
+        def run_loop():
+            self._loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(self._loop)
+            self._loop.run_until_complete(self._process_signals())
+
+        self._loop_thread = threading.Thread(target=run_loop, daemon=True)
+        self._loop_thread.start()
+
+    async def _process_signals(self):
+        """异步处理信号队列"""
+        while self._running or not self._signal_queue.empty():
+            try:
+                # 非阻塞获取，超时后检查 _running
+                data = await asyncio.get_event_loop().run_in_executor(
+                    None, lambda: self._signal_queue.get(timeout=1.0)
+                )
+                await self._execute_signal_async(data)
+            except queue.Empty:
+                continue
+            except Exception as e:
+                logger.error(f"Signal processing error: {e}")
 
     def _on_connect(self, client, userdata, flags, rc):
         """连接成功回调"""
         if rc == 0:
             logger.info("Connected to MQTT broker")
-            # 订阅信号 Topic (QoS 1)
             client.subscribe(self.TOPIC, qos=1)
         else:
             logger.error(f"MQTT connect failed: {rc}")
 
     def _on_message(self, client, userdata, msg):
-        """消息回调"""
+        """
+        消息回调 (在 MQTT 网络线程)
+
+        只做轻量操作: 解析 JSON、检查幂等、入队
+        重操作 (执行交易) 在 asyncio 工作线程完成
+        """
         try:
             data = json.loads(msg.payload.decode())
             signal_id = data.get("signal_id")
 
-            # 幂等检查
-            if self._is_duplicate(signal_id):
+            # 幂等检查 (SQLite 读取，轻量)
+            if self.idempotency.is_duplicate(signal_id):
                 logger.info(f"Duplicate signal, skip: {signal_id}")
                 return
 
-            # 执行交易
-            self._execute_signal(data)
-
-            # 记录已处理
-            self._mark_processed(signal_id)
-            logger.info(f"Signal processed: {signal_id}")
-
-            # 清理过期记录
-            self._cleanup_processed_ids()
+            # 入队等待处理 (不阻塞 MQTT 线程)
+            self._signal_queue.put(data)
+            logger.debug(f"Signal queued: {signal_id}")
 
         except Exception as e:
-            logger.error(f"Message processing error: {e}")
+            logger.error(f"Message parse error: {e}")
+
+    async def _execute_signal_async(self, data: Dict):
+        """异步执行信号"""
+        signal_id = data.get("signal_id")
+
+        try:
+            symbol = data["symbol"]
+            side = data["side"]
+            amount = float(data["amount"])
+
+            # 调用 Hummingbot executor (异步)
+            await self.executor.execute(
+                symbol=symbol,
+                side=side,
+                amount=amount,
+            )
+
+            # 执行成功后标记已处理 (持久化)
+            self.idempotency.mark_processed(signal_id)
+            logger.info(f"Signal processed: {signal_id}")
+
+            # 定期清理过期记录
+            self.idempotency.cleanup_expired()
+
+        except Exception as e:
+            logger.error(f"Signal execution error: {signal_id}, {e}")
+            # 执行失败不标记，下次重试
 
     def _wait_for_connector_ready(self):
         """
@@ -776,13 +955,11 @@ class SignalConsumer:
 
         while True:
             try:
-                # 检查 trading rules
                 if not self.connector.trading_rules:
                     logger.debug("Trading rules not ready")
                     time.sleep(1)
                     continue
 
-                # 检查价格
                 test_symbol = list(self.connector.trading_rules.keys())[0]
                 price = self.connector.get_mid_price(test_symbol)
                 if price is None or price <= 0:
@@ -790,7 +967,6 @@ class SignalConsumer:
                     time.sleep(1)
                     continue
 
-                # 永续合约: 检查 leverage
                 if hasattr(self.connector, 'get_leverage'):
                     leverage = self.connector.get_leverage(test_symbol)
                     if leverage is None:
@@ -805,41 +981,6 @@ class SignalConsumer:
             except Exception as e:
                 logger.debug(f"Readiness check error: {e}")
                 time.sleep(1)
-
-    def _execute_signal(self, data: Dict):
-        """执行信号"""
-        symbol = data["symbol"]
-        side = data["side"]
-        amount = float(data["amount"])
-
-        # 调用 Hummingbot executor (同步包装)
-        asyncio.get_event_loop().run_until_complete(
-            self.executor.execute(
-                symbol=symbol,
-                side=side,
-                amount=amount,
-            )
-        )
-
-    def _is_duplicate(self, signal_id: str) -> bool:
-        """检查是否重复"""
-        return signal_id in self._processed_ids
-
-    def _mark_processed(self, signal_id: str):
-        """标记已处理"""
-        self._processed_ids.add(signal_id)
-        self._processed_ids_ttl[signal_id] = datetime.now(timezone.utc)
-
-    def _cleanup_processed_ids(self):
-        """清理过期记录 (保留 1 小时)"""
-        cutoff = datetime.now(timezone.utc) - timedelta(hours=1)
-        expired = [
-            sid for sid, ts in self._processed_ids_ttl.items()
-            if ts < cutoff
-        ]
-        for sid in expired:
-            self._processed_ids.discard(sid)
-            del self._processed_ids_ttl[sid]
 ```
 
 ### 5.3 Docker 编排
@@ -895,6 +1036,8 @@ services:
       - TZ=UTC
     volumes:
       - ../config:/config:ro
+      - ../libs:/libs:ro
+      - ../data/idempotency:/data/idempotency  # SQLite 持久化
     command: python -m algvex_execution.cli run
     restart: unless-stopped
 
@@ -920,17 +1063,32 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# 安装 Qlib (从本地 libs)
-COPY --from=libs /libs/qlib /libs/qlib
-RUN pip install -e /libs/qlib
-
 # 应用代码
 COPY algvex_research/ ./algvex_research/
+COPY entrypoint.sh /entrypoint.sh
+RUN chmod +x /entrypoint.sh
 
 ENV PYTHONUNBUFFERED=1
 ENV TZ=UTC
 
+# Qlib 通过 volume 挂载，在 entrypoint 安装
+ENTRYPOINT ["/entrypoint.sh"]
 CMD ["python", "-m", "algvex_research.cli", "run"]
+```
+
+**entrypoint.sh** (research/entrypoint.sh):
+```bash
+#!/bin/bash
+set -e
+
+# 安装 Qlib (从挂载的 /libs 目录)
+if [ -d "/libs/qlib" ] && [ ! -f "/tmp/.qlib_installed" ]; then
+    echo "Installing Qlib from /libs/qlib..."
+    pip install -e /libs/qlib --quiet
+    touch /tmp/.qlib_installed
+fi
+
+exec "$@"
 ```
 
 #### 5.3.2 Research requirements.txt
@@ -973,17 +1131,32 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# 安装 Hummingbot (从本地 libs)
-COPY --from=libs /libs/hummingbot /libs/hummingbot
-RUN pip install -e /libs/hummingbot
-
 # 应用代码
 COPY algvex_execution/ ./algvex_execution/
+COPY entrypoint.sh /entrypoint.sh
+RUN chmod +x /entrypoint.sh
 
 ENV PYTHONUNBUFFERED=1
 ENV TZ=UTC
 
+# Hummingbot 通过 volume 挂载，在 entrypoint 安装
+ENTRYPOINT ["/entrypoint.sh"]
 CMD ["python", "-m", "algvex_execution.cli", "run"]
+```
+
+**entrypoint.sh** (execution/entrypoint.sh):
+```bash
+#!/bin/bash
+set -e
+
+# 安装 Hummingbot (从挂载的 /libs 目录)
+if [ -d "/libs/hummingbot" ] && [ ! -f "/tmp/.hummingbot_installed" ]; then
+    echo "Installing Hummingbot from /libs/hummingbot..."
+    pip install -e /libs/hummingbot --quiet
+    touch /tmp/.hummingbot_installed
+fi
+
+exec "$@"
 ```
 
 #### 5.3.4 Execution requirements.txt
@@ -1880,10 +2053,11 @@ docker-compose exec execution bash
 
 ---
 
-**文档版本**: 4.3
+**文档版本**: 4.4
 **创建日期**: 2025-12-31
 **更新日期**: 2025-12-31
 **更新历史**:
+- v4.4: 生产级修复 - Collector分页、Dockerfile修复、asyncio线程安全、SQLite幂等持久化
 - v4.3: 添加数据质量规范 (5.4) - UTC对齐、open_time锚点、增量幂等、缺口校验
 - v4.2: 消息层改为 MQTT (EMQX) - 与 Hummingbot 生态对齐
 - v4.1: 增强实施参考 - 源码路径、阶段子任务、适配器规格、故障排查
