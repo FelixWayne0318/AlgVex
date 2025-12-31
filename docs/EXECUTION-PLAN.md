@@ -1,6 +1,6 @@
 # AlgVex 执行方案
 
-> **版本**: 4.0
+> **版本**: 4.1
 > **日期**: 2025-12-31
 > **目标**: 基于 Qlib v0.9.7 + Hummingbot v2.11.0 构建加密货币量化交易系统
 
@@ -20,6 +20,8 @@
 - [十、风险偏差声明](#十风险偏差声明)
 - [十一、交付物清单](#十一交付物清单)
 - [附录 A: 参考资源](#附录-a-参考资源)
+- [附录 B: 源码路径参考表](#附录-b-源码路径参考表)
+- [附录 C: 常见问题排查](#附录-c-常见问题排查)
 
 ---
 
@@ -268,17 +270,31 @@ Research Container                    Redis Streams                    Execution
 | Hummingbot 连接器 | 6 | 0 | 0 | 31 |
 | Hummingbot 执行器 | 3 | 0 | 0 | 4 |
 
-**最小闭环所需适配类**:
+**最小闭环所需适配类 (7 个)**:
 
-| 序号 | 类名 | 服务 | 说明 |
-|------|------|------|------|
-| 1 | CryptoCalendarProvider | Research | 24/7 日历 |
-| 2 | CryptoInstrumentProvider | Research | 品种管理 |
-| 3 | DataCollector | Research | 只存 CSV/Parquet |
-| 4 | CryptoExchange | Research | 回测用交易所 |
-| 5 | PerpetualPosition | Research | 永续仓位 |
-| 6 | SignalPublisher | Research | 发布到 Redis Streams |
-| 7 | SignalConsumer | Execution | Async 消费 + Readiness + 幂等 |
+| 序号 | 类名 | 服务 | 继承/依赖 | 关键方法 |
+|------|------|------|----------|----------|
+| 1 | CryptoCalendarProvider | Research | `qlib.data.data.CalendarProvider` | `calendar()` → 24/7 UTC 时间戳 |
+| 2 | CryptoInstrumentProvider | Research | `qlib.data.data.InstrumentProvider` | `instruments()` → 品种列表 |
+| 3 | BinancePerpetualCollector | Research | `requests` | `collect()` → Parquet 文件 |
+| 4 | CryptoExchange | Research | `qlib.backtest.exchange.Exchange` | `deal()`, `get_quote()` + 杠杆/资金费率 |
+| 5 | PerpetualPosition | Research | `qlib.backtest.position.Position` | `update_order()` + 保证金计算 |
+| 6 | SignalPublisher | Research | `redis.Redis` | `publish()` → XADD 到 Streams |
+| 7 | SignalConsumer | Execution | `redis.asyncio.Redis` | `start()`, `_wait_for_connector_ready()`, `_is_duplicate()` |
+
+**适配器类详细规格**:
+
+| 类名 | 文件路径 | 代码行数估算 | 复杂度 |
+|------|----------|-------------|--------|
+| CryptoCalendarProvider | `research/algvex_research/data/calendar.py` | ~50 | 低 |
+| CryptoInstrumentProvider | `research/algvex_research/data/instrument.py` | ~80 | 低 |
+| BinancePerpetualCollector | `research/algvex_research/data/collector.py` | ~150 | 中 |
+| CryptoExchange | `research/algvex_research/backtest/exchange.py` | ~300 | 高 |
+| PerpetualPosition | `research/algvex_research/backtest/position.py` | ~200 | 中 |
+| SignalPublisher | `research/algvex_research/signals/publisher.py` | ~60 | 低 |
+| SignalConsumer | `execution/algvex_execution/consumer/signal_consumer.py` | ~250 | 高 |
+
+> **总代码量估算**: ~1100 行核心代码 + ~500 行测试代码
 
 ---
 
@@ -874,61 +890,173 @@ volumes:
 
 ## 六、实施阶段
 
-### 阶段 1: 环境搭建
+> 每个阶段包含详细子任务、交付物和依赖关系
 
-| 任务 | 输出 | 验收标准 |
-|------|------|----------|
-| 创建双服务目录结构 | research/, execution/ | 目录完整 |
-| 编写 Research Dockerfile | Python 3.10 + Qlib | `import qlib` 成功 |
-| 编写 Execution Dockerfile | Python 3.12 + Hummingbot | `import hummingbot` 成功 |
-| 编写 docker-compose.yml | 编排文件 | `docker-compose up` 成功 |
-| 验证 Redis Streams | 测试脚本 | 发布/消费成功 |
+### 阶段 1: 环境搭建 (基础设施)
 
-### 阶段 2: 数据层
+**目标**: 搭建可运行的双容器开发环境
 
-| 任务 | 输出 | 验收标准 |
-|------|------|----------|
-| 实现 BinancePerpetualCollector | collector.py | 拉取 BTC-USDT 1h 数据成功 |
-| 封装 dump_bin.py 调用 | convert.py | 转换为 Qlib 格式成功 |
-| 实现 CryptoCalendarProvider | calendar.py | 生成 24/7 UTC 时间戳 |
-| 实现 CryptoInstrumentProvider | instrument.py | 返回品种列表 |
-| 验证 Qlib 数据读取 | 测试脚本 | `D.features()` 成功 |
+| 序号 | 子任务 | 交付物 | 验收标准 | 依赖 |
+|------|--------|--------|----------|------|
+| 1.1 | 创建目录结构 | `research/`, `execution/`, `docker/`, `config/` | 结构符合文档 | - |
+| 1.2 | 编写 Research Dockerfile | `research/Dockerfile` | 构建成功，`import qlib` 通过 | 1.1 |
+| 1.3 | 编写 Execution Dockerfile | `execution/Dockerfile` | 构建成功，`import hummingbot` 通过 | 1.1 |
+| 1.4 | 编写 docker-compose.yml | `docker/docker-compose.yml` | `docker-compose up` 三服务启动 | 1.2, 1.3 |
+| 1.5 | 编写 Redis Streams 测试脚本 | `scripts/test_redis.py` | XADD/XREADGROUP 成功 | 1.4 |
+| 1.6 | 编写开发环境配置 | `docker/docker-compose.dev.yml` | 热重载生效 | 1.4 |
 
-### 阶段 3: 模型层
+**阶段 1 交付物检查清单**:
+```bash
+□ docker-compose build 成功 (无错误)
+□ docker-compose up -d 三个容器运行
+□ docker-compose exec research python -c "import qlib; print('OK')"
+□ docker-compose exec execution python -c "import hummingbot; print('OK')"
+□ docker-compose exec redis redis-cli ping → PONG
+```
 
-| 任务 | 输出 | 验收标准 |
-|------|------|----------|
-| 适配 Alpha158 窗口 | alpha158.py | 因子计算成功 |
-| 验证 LGBModel 训练 | 训练脚本 | IC > 0.02 |
-| 实现 CryptoExchange | exchange.py | 回测运行成功 |
-| 实现 PerpetualPosition | position.py | 仓位计算正确 |
+---
 
-### 阶段 4: 信号桥
+### 阶段 2: 数据层 (Research 服务)
 
-| 任务 | 输出 | 验收标准 |
-|------|------|----------|
-| 实现 SignalPublisher | publisher.py | 发布到 Streams 成功 |
-| 实现 SignalConsumer | signal_consumer.py | 消费成功 |
-| 实现 Readiness Gate | readiness_gate.py | Connector 就绪检测 |
-| 实现幂等去重 | idempotency.py | 重复消息跳过 |
-| 验证 ACK/重试 | 测试脚本 | 失败重试成功 |
+**目标**: 实现数据收集、转换、日历、品种管理
 
-### 阶段 5: 执行层
+| 序号 | 子任务 | 交付物 | 验收标准 | 依赖 |
+|------|--------|--------|----------|------|
+| 2.1 | 实现 BinancePerpetualCollector | `research/algvex_research/data/collector.py` | 拉取 BTC-USDT 1h 数据，保存 Parquet | 阶段 1 |
+| 2.2 | 实现 dump_bin.py 封装 | `research/algvex_research/data/convert.py` | 调用官方脚本，转换成功 | 2.1 |
+| 2.3 | 实现 CryptoCalendarProvider | `research/algvex_research/data/calendar.py` | 生成 24/7 UTC 时间戳列表 | 阶段 1 |
+| 2.4 | 实现 CryptoInstrumentProvider | `research/algvex_research/data/instrument.py` | 返回品种列表 | 阶段 1 |
+| 2.5 | 编写 Qlib 初始化配置 | `config/qlib_config.yaml` | `qlib.init()` 成功 | 2.2, 2.3, 2.4 |
+| 2.6 | 编写数据层单元测试 | `research/tests/test_data.py` | pytest 全部通过 | 2.1-2.5 |
+| 2.7 | 编写数据收集脚本 | `scripts/collect_data.sh` | 一键收集 + 转换 | 2.1, 2.2 |
 
-| 任务 | 输出 | 验收标准 |
-|------|------|----------|
-| 集成 PositionExecutor | manager.py | 执行器可用 |
-| 实现 Kill Switch | kill_switch.py | 触发停止正确 |
-| 实现状态回报 | status_publisher.py | 状态发布成功 |
-| Paper Trading 测试 | 测试报告 | 24h 无错误 |
+**阶段 2 交付物检查清单**:
+```bash
+□ python collector.py --symbols BTC-USDT --start 2023-01-01 --end 2024-01-01
+□ ls data/raw/*.parquet → 文件存在
+□ python convert.py --source data/raw --target data/qlib_data
+□ ls data/qlib_data/instruments/ → 文件存在
+□ python -c "import qlib; qlib.init(...); from qlib.data import D; print(D.features(...))"
+```
 
-### 阶段 6: 集成测试
+---
 
-| 任务 | 输出 | 验收标准 |
-|------|------|----------|
-| 端到端测试 | 测试报告 | 完整闭环运行 |
-| 7 天 Paper Trading | 监控日志 | 稳定无错误 |
-| 文档完善 | README, 部署文档 | 文档完整 |
+### 阶段 3: 模型层 (Research 服务)
+
+**目标**: 实现因子计算、模型训练、回测框架
+
+| 序号 | 子任务 | 交付物 | 验收标准 | 依赖 |
+|------|--------|--------|----------|------|
+| 3.1 | 适配 Alpha158 窗口参数 | `research/algvex_research/factors/alpha158.py` | 因子计算无 NaN | 阶段 2 |
+| 3.2 | 实现 CryptoExchange | `research/algvex_research/backtest/exchange.py` | 支持杠杆、资金费率 | 阶段 2 |
+| 3.3 | 实现 PerpetualPosition | `research/algvex_research/backtest/position.py` | 仓位计算正确 | 3.2 |
+| 3.4 | 实现资金费率模块 | `research/algvex_research/backtest/funding.py` | 费率扣除正确 | 3.2 |
+| 3.5 | 编写模型训练脚本 | `scripts/train_model.py` | LGBModel 训练成功 | 3.1 |
+| 3.6 | 编写回测脚本 | `scripts/backtest.py` | 回测运行无错误 | 3.2, 3.3 |
+| 3.7 | 编写模型评估报告 | `research/tests/test_model.py` | IC > 0.02 | 3.5 |
+
+**阶段 3 交付物检查清单**:
+```bash
+□ python train_model.py → 模型保存成功
+□ 训练日志显示 IC > 0.02
+□ python backtest.py → 回测完成，生成报告
+□ 回测报告包含 Sharpe, MaxDD, 收益曲线
+```
+
+---
+
+### 阶段 4: 信号桥 (跨服务通信)
+
+**目标**: 实现 Research → Redis Streams → Execution 的可靠通信
+
+| 序号 | 子任务 | 交付物 | 验收标准 | 依赖 |
+|------|--------|--------|----------|------|
+| 4.1 | 实现 SignalPublisher | `research/algvex_research/signals/publisher.py` | XADD 成功 | 阶段 1 |
+| 4.2 | 实现 SignalConsumer 框架 | `execution/algvex_execution/consumer/signal_consumer.py` | XREADGROUP 成功 | 阶段 1 |
+| 4.3 | 实现 Readiness Gate | `execution/algvex_execution/consumer/readiness_gate.py` | 检测 Connector 就绪 | 4.2 |
+| 4.4 | 实现幂等去重 | `execution/algvex_execution/consumer/idempotency.py` | 重复 signal_id 跳过 | 4.2 |
+| 4.5 | 实现 ACK/重试逻辑 | 集成到 signal_consumer.py | 失败不 ACK，自动重试 | 4.2 |
+| 4.6 | 实现状态回报 | `execution/algvex_execution/reporter/status_publisher.py` | 状态发布到 algvex:status | 4.2 |
+| 4.7 | 编写信号桥集成测试 | `tests/integration/test_signal_bridge.py` | 端到端测试通过 | 4.1-4.6 |
+
+**阶段 4 交付物检查清单**:
+```bash
+□ python publisher.py → Redis XINFO STREAM algvex:signals 显示消息
+□ python signal_consumer.py → 日志显示 "Signal processed"
+□ 发送重复 signal_id → 日志显示 "Duplicate signal, skip"
+□ 模拟消费失败 → XPENDING 显示 pending 消息
+□ 重启消费者 → pending 消息被重新处理
+```
+
+---
+
+### 阶段 5: 执行层 (Execution 服务)
+
+**目标**: 集成 Hummingbot 执行器和风控
+
+| 序号 | 子任务 | 交付物 | 验收标准 | 依赖 |
+|------|--------|--------|----------|------|
+| 5.1 | 实现 Connector 管理器 | `execution/algvex_execution/connector/manager.py` | 初始化 Connector 成功 | 阶段 1 |
+| 5.2 | 集成 PositionExecutor | `execution/algvex_execution/executor/manager.py` | 执行器可调用 | 5.1 |
+| 5.3 | 实现 Kill Switch | `execution/algvex_execution/risk/kill_switch.py` | 触发条件后停止交易 | 5.1 |
+| 5.4 | 实现 Position Limit | `execution/algvex_execution/risk/position_limit.py` | 超限拒绝订单 | 5.1 |
+| 5.5 | 编写 Paper Trading 测试 | `scripts/paper_trading.py` | 连接 Testnet 成功 | 5.1, 5.2 |
+| 5.6 | 编写执行层单元测试 | `execution/tests/test_executor.py` | pytest 全部通过 | 5.1-5.4 |
+| 5.7 | 24 小时 Paper Trading | 监控日志 | 无错误、无崩溃 | 5.5 |
+
+**阶段 5 交付物检查清单**:
+```bash
+□ Paper Trading 连接成功 (Testnet)
+□ 发送测试信号 → 订单在 Testnet 成交
+□ 触发 Kill Switch → 交易停止
+□ 24 小时运行日志无 ERROR
+```
+
+---
+
+### 阶段 6: 集成测试与上线
+
+**目标**: 端到端验证，准备生产部署
+
+| 序号 | 子任务 | 交付物 | 验收标准 | 依赖 |
+|------|--------|--------|----------|------|
+| 6.1 | 编写端到端测试 | `tests/integration/test_e2e.py` | 完整闭环测试通过 | 阶段 1-5 |
+| 6.2 | 7 天 Paper Trading | 监控报告 | 稳定无错误 | 6.1 |
+| 6.3 | 编写生产 docker-compose | `docker/docker-compose.prod.yml` | 生产配置完整 | 6.2 |
+| 6.4 | 编写部署文档 | `docs/DEPLOYMENT.md` | 步骤清晰可执行 | 6.3 |
+| 6.5 | 编写运维文档 | `docs/OPERATIONS.md` | 监控、故障处理 | 6.3 |
+| 6.6 | 编写 README | `README.md` | 快速开始指南 | 6.4 |
+| 6.7 | 代码审查 | 审查报告 | 无高风险问题 | 6.1-6.6 |
+
+**阶段 6 交付物检查清单**:
+```bash
+□ 端到端测试: 数据 → 因子 → 模型 → 回测 → 信号 → 执行 → 状态回报
+□ 7 天 Paper Trading 无 ERROR
+□ docker-compose -f docker-compose.prod.yml up -d 成功
+□ README.md 按步骤执行可复现
+```
+
+---
+
+### 阶段依赖关系图
+
+```
+阶段 1 (环境搭建)
+    │
+    ├──────────────────┐
+    ▼                  ▼
+阶段 2 (数据层)    阶段 4.1-4.2 (信号桥基础)
+    │                  │
+    ▼                  │
+阶段 3 (模型层)        │
+    │                  │
+    ▼                  ▼
+阶段 4.3-4.7 ◄────── 阶段 5 (执行层)
+    │                  │
+    └────────┬─────────┘
+             ▼
+        阶段 6 (集成测试)
+```
 
 ---
 
@@ -1164,10 +1292,150 @@ libs/
 
 ---
 
-**文档版本**: 4.0 (架构重构)
+## 附录 B: 源码路径参考表
+
+> 开发者需要经常查阅的源码位置
+
+### Qlib 核心路径 (libs/qlib/)
+
+| 模块 | 路径 | 关键文件/类 |
+|------|------|-------------|
+| **模型** | `qlib/contrib/model/` | |
+| - 传统 ML | `gbdt.py`, `linear.py`, `xgboost.py`, `catboost_model.py` | LGBModel, XGBModel |
+| - RNN | `pytorch_lstm.py`, `pytorch_gru.py`, `pytorch_alstm.py` | LSTM, GRU, ALSTM |
+| - Transformer | `pytorch_transformer.py`, `pytorch_localformer.py` | TransformerModel |
+| - CNN | `pytorch_tcn.py`, `pytorch_tcts.py` | TCN, TCTS |
+| **操作符** | `qlib/data/ops.py` | Sum, Mean, EMA, Ref, Delta... |
+| - 高频 (不可用) | `qlib/contrib/ops/high_freq.py` | DayCumsum, DayLast (硬编码 A 股) |
+| **数据基础** | `qlib/data/data.py` | CalendarProvider, InstrumentProvider |
+| **因子处理** | `qlib/contrib/data/handler.py` | Alpha158, Alpha360 |
+| **数据处理器** | `qlib/contrib/data/processor.py` | DropnaProcessor, ZscoreNorm, CSRankNorm |
+| **回测框架** | `qlib/backtest/` | |
+| - 交易所 | `exchange.py` | Exchange 基类 |
+| - 执行器 | `executor.py` | SimulatorExecutor, NestedExecutor |
+| - 持仓 | `position.py` | Position 基类 |
+| **工作流** | `qlib/workflow/` | |
+| - 任务管理 | `task/manage.py` | TaskManager |
+| - 滚动训练 | `task/gen.py` | RollingGen |
+| - 在线服务 | `online/manager.py` | OnlineManager |
+| **数据转换** | `scripts/dump_bin.py` | **必须使用此脚本** |
+| **已有 Crypto** | `scripts/data_collector/crypto/collector.py` | CryptoCollector (CoinGecko) |
+
+### Hummingbot 核心路径 (libs/hummingbot/)
+
+| 模块 | 路径 | 关键文件/类 |
+|------|------|-------------|
+| **永续连接器** | `hummingbot/connector/derivative/` | |
+| - Binance | `binance_perpetual/` | BinancePerpetualDerivative |
+| - Bybit | `bybit_perpetual/` | BybitPerpetualDerivative |
+| - OKX | `okx_perpetual/` | OkxPerpetualDerivative |
+| - Gate.io | `gate_io_perpetual/` | GateIoPerpetualDerivative |
+| **现货连接器** | `hummingbot/connector/exchange/` | |
+| - Binance | `binance/` | BinanceExchange |
+| **执行器** | `hummingbot/strategy_v2/executors/` | |
+| - Position | `position_executor/` | PositionExecutor |
+| - Order | `order_executor/` | OrderExecutor |
+| - TWAP | `twap_executor/` | TWAPExecutor |
+| **风控** | | |
+| - Triple Barrier | `executors/position_executor/data_types.py` | TripleBarrierConfig |
+| - Kill Switch | `hummingbot/core/rate_oracle/` | RateOracle |
+| **异步核心** | `hummingbot/core/` | |
+| - 时钟 | `clock.py` | Clock |
+| - 事件 | `event/` | Event, EventForwarder |
+| **数据源** | `hummingbot/data_feed/candles_feed/` | CandlesFactory |
+| **策略基类** | `hummingbot/strategy_v2/` | StrategyV2Base |
+
+### 依赖冲突源码位置
+
+| 文件 | 关键依赖 |
+|------|----------|
+| `libs/qlib/pyproject.toml` | `numpy<2.0.0` (RL 模块) |
+| `libs/hummingbot/setup.py` | `numpy>=2.2.6`, `pandas>=2.3.2` |
+
+---
+
+## 附录 C: 常见问题排查
+
+### C.1 环境问题
+
+| 问题 | 症状 | 解决方案 |
+|------|------|----------|
+| **numpy 版本冲突** | `ImportError: numpy.core.multiarray failed to import` | 确保 Research 和 Execution 在不同容器中运行 |
+| **Qlib 初始化失败** | `qlib.init() failed` | 检查 `QLIB_DATA_DIR` 路径是否存在且包含正确的 bin 文件 |
+| **Hummingbot 启动失败** | `ModuleNotFoundError: No module named 'hummingbot'` | 检查 Dockerfile 中 `pip install -e libs/hummingbot` |
+
+### C.2 数据问题
+
+| 问题 | 症状 | 解决方案 |
+|------|------|----------|
+| **数据格式错误** | `ValueError: buffer size must be a multiple of element size` | 使用官方 `dump_bin.py`，不要自造 bin 格式 |
+| **日期索引缺失** | `KeyError: 'datetime'` | 确保 Parquet 包含 `date` 字段且为 UTC 时区 |
+| **日历不匹配** | `Calendar mismatch` | 使用 CryptoCalendarProvider (24/7) |
+| **数据为空** | `D.features() returns empty` | 检查 instruments 文件是否包含正确的品种代码 |
+
+### C.3 信号桥问题
+
+| 问题 | 症状 | 解决方案 |
+|------|------|----------|
+| **Redis 连接失败** | `ConnectionRefusedError` | 检查 Redis 是否启动: `docker-compose logs redis` |
+| **消费者组不存在** | `NOGROUP No such consumer group` | 消费者会自动创建，检查代码中 `xgroup_create` |
+| **消息堆积** | `XPENDING` 显示大量 pending | 检查消费者日志，可能是处理失败或 ACK 缺失 |
+| **重复执行** | 同一信号执行多次 | 检查幂等去重逻辑是否生效 |
+
+### C.4 执行问题
+
+| 问题 | 症状 | 解决方案 |
+|------|------|----------|
+| **Connector 不就绪** | `Waiting for connector ready...` 持续输出 | 检查 API Key 是否正确，网络是否可达 |
+| **交易失败** | `Order rejected` | 检查: 1) 余额是否充足 2) 交易对是否正确 3) 数量是否满足最小要求 |
+| **价格获取失败** | `get_mid_price returns None` | 检查 WebSocket 连接，可能需要重启 Connector |
+| **Kill Switch 触发** | 交易突然停止 | 查看 `kill_switch.py` 日志，检查触发条件 |
+
+### C.5 调试命令
+
+```bash
+# 1. 检查 Redis Streams 状态
+docker-compose exec redis redis-cli XINFO STREAM algvex:signals
+docker-compose exec redis redis-cli XINFO GROUPS algvex:signals
+
+# 2. 查看 pending 消息 (未 ACK)
+docker-compose exec redis redis-cli XPENDING algvex:signals execution
+
+# 3. 手动 ACK 消息 (谨慎使用)
+docker-compose exec redis redis-cli XACK algvex:signals execution <message_id>
+
+# 4. 查看最近 10 条消息
+docker-compose exec redis redis-cli XREVRANGE algvex:signals + - COUNT 10
+
+# 5. 检查 Qlib 数据
+docker-compose exec research python -c "
+import qlib
+qlib.init(provider_uri='./data/qlib_data')
+from qlib.data import D
+print(D.calendar(start_time='2024-01-01', end_time='2024-01-02', freq='1h'))
+"
+
+# 6. 检查 Hummingbot Connector
+docker-compose exec execution python -c "
+from hummingbot.connector.derivative.binance_perpetual.binance_perpetual_derivative import BinancePerpetualDerivative
+print('Connector imported successfully')
+"
+
+# 7. 查看容器资源使用
+docker stats --no-stream
+
+# 8. 进入容器调试
+docker-compose exec research bash
+docker-compose exec execution bash
+```
+
+---
+
+**文档版本**: 4.1 (增强实施参考)
 **创建日期**: 2025-12-31
 **更新日期**: 2025-12-31
 **更新历史**:
+- v4.1: 增强实施参考 - 添加源码路径参考表、细化阶段子任务、扩展适配器类规格、添加故障排查指南
 - v4.0: 架构重构 - 双容器分离、官方数据转换、生产级信号桥、能力矩阵、风险偏差声明
 - v3.1: 添加目录结构，修复适配工作量统计
 - v3.0: 合并 TECHNICAL-PROPOSAL.md
