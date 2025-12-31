@@ -727,7 +727,117 @@ plotly>=5.18.0     # 新增
 
 ---
 
-## 七、参考资源
+## 七、补充遗漏模块 (2025-12-31 审计)
+
+### 7.1 Qlib 遗漏模块
+
+#### 7.1.1 高频操作符 (qlib/contrib/ops/high_freq.py)
+
+| 操作符 | 说明 | 适配策略 |
+|--------|------|----------|
+| **DayCumsum** | 日内累计求和 | 🟢 适配小时级 |
+| **DayLast** | 日内最后一个值 | 🟢 适配小时级 |
+| **get_calendar_day** | 高频日历日期 | 🔴 需适配 24/7 |
+| **get_calendar_minute** | 高频日历分钟 | 🔴 需适配 24/7 |
+
+#### 7.1.2 风险模型 (qlib/model/riskmodel/)
+
+| 模型 | 文件 | 说明 | 适配策略 |
+|------|------|------|----------|
+| **RiskModel** | base.py | 风险模型基类 | 🟢 无需修改 |
+| **POETCovEstimator** | poet.py | POET 协方差估计 | 🟢 无需修改 |
+| **ShrinkCovEstimator** | shrink.py | 收缩协方差估计 | 🟢 无需修改 |
+| **StructuredCovEstimator** | structured.py | 结构化协方差估计 | 🟢 无需修改 |
+
+#### 7.1.3 集成学习 (qlib/model/ens/)
+
+| 组件 | 说明 | 适配策略 |
+|------|------|----------|
+| **RollingEnsemble** | 滚动集成 | 🟢 无需修改 |
+| **AverageEnsemble** | 平均集成 | 🟢 无需修改 |
+| **RollingGroup** | 滚动分组 | 🟢 无需修改 |
+
+#### 7.1.4 超参数调优器 (qlib/contrib/tuner/)
+
+| 组件 | 说明 | 适配策略 |
+|------|------|----------|
+| **Tuner** | 超参数搜索 | 🟢 无需修改 |
+| **TunerPipeline** | 调优流水线 | 🟢 无需修改 |
+| **SearchSpace** | 搜索空间定义 | 🟢 无需修改 |
+
+#### 7.1.5 组合优化策略 (qlib/contrib/strategy/optimizer/)
+
+| 策略 | 说明 | 适配策略 |
+|------|------|----------|
+| **EnhancedIndexingOptimizer** | 增强指数策略 | 🟡 需适配加密货币 |
+| **MeanVarianceOptimizer** | 均值方差优化 | 🟢 无需修改 |
+
+#### 7.1.6 已有 Crypto 数据收集器 (scripts/data_collector/crypto/)
+
+**重要发现**: Qlib 已有 crypto 数据收集器！
+
+```python
+# 位置: libs/qlib/scripts/data_collector/crypto/collector.py
+# API: CoinGecko
+# 功能: 加密货币数据收集 (日线)
+
+class CryptoCollector(BaseCollector):
+    # 支持 interval: 1d
+    # 输出: Qlib 标准格式
+```
+
+**适配建议**: 扩展支持 1h 间隔 + Binance API
+
+### 7.2 Hummingbot 遗漏模块
+
+#### 7.2.1 Candles Feed (data_feed/candles_feed/)
+
+**21+ 交易所 K线数据源**:
+
+| 数据源 | 类型 | 用途 |
+|--------|------|------|
+| binance_perpetual_candles | 永续 | 主数据源 |
+| binance_spot_candles | 现货 | 套利参考 |
+| bybit_perpetual_candles | 永续 | 备用数据源 |
+| okx_perpetual_candles | 永续 | 备用数据源 |
+| gate_io_perpetual_candles | 永续 | 备用数据源 |
+| kucoin_perpetual_candles | 永续 | 备用数据源 |
+| hyperliquid_perpetual_candles | DEX | DEX 数据 |
+| ... (共 21+) | ... | ... |
+
+#### 7.2.2 其他数据源 (data_feed/)
+
+| 数据源 | 说明 |
+|--------|------|
+| **CoinGecko** | 价格/市值数据 |
+| **CoinCap** | 市值排名数据 |
+| **AMM Gateway** | DEX 数据 |
+| **Liquidations** | 清算数据 |
+| **Market Data Provider** | 统一数据接口 |
+
+#### 7.2.3 回测引擎 (strategy_v2/backtesting/)
+
+| 组件 | 说明 |
+|------|------|
+| **BacktestingEngineBase** | 回测引擎基类 |
+| **BacktestingDataProvider** | 回测数据提供者 |
+| **ExecutorSimulatorBase** | 执行器模拟基类 |
+
+#### 7.2.4 策略脚本示例 (scripts/)
+
+**30+ 社区策略脚本**:
+- triangular_arbitrage.py - 三角套利
+- spot_perp_arb.py - 现货-永续套利
+- directional_strategy_macd_bb.py - MACD+布林带
+- simple_pmm.py - 简单 PMM
+- simple_vwap.py - VWAP 执行
+- fixed_grid.py - 固定网格
+- 1overN_portfolio.py - 等权组合
+- ... (共 30+)
+
+---
+
+## 八、参考资源
 
 ### Qlib
 - [GitHub](https://github.com/microsoft/qlib)
@@ -747,7 +857,11 @@ plotly>=5.18.0     # 新增
 
 ---
 
-**文档版本**: 3.0 (基于本地代码完整审查)
+**文档版本**: 3.1 (补充遗漏模块)
 **审查源码**: libs/qlib (v0.9.7) + libs/hummingbot (v2.11.0)
 **更新日期**: 2025-12-31
 **作者**: Claude (AlgVex AI Assistant)
+
+---
+
+> **关联文档**: [EXECUTION-PLAN.md](./EXECUTION-PLAN.md) - 完整执行方案
