@@ -448,14 +448,18 @@ class BinancePerpetualCollector:
             binance_symbol = symbol.replace("-", "")
             logger.info(f"Fetching {symbol} from {start_date} to {end_date}")
 
+            symbol_count = 0  # 统计当前 symbol 的数据量
             # 使用分页迭代器获取完整数据
             for row in self._fetch_klines_paginated(
                 binance_symbol, start_date, end_date, interval
             ):
+                open_time_ms = int(row[0])  # 保留原始毫秒时间戳
                 all_data.append({
-                    # 统一使用 UTC 时区，以 open_time 为锚点
-                    "date": pd.Timestamp(row[0], unit="ms", tz="UTC"),
-                    "symbol": symbol,
+                    # open_time_ms 是唯一锚点 (int64)
+                    "open_time_ms": open_time_ms,
+                    # datetime 由 open_time_ms 派生 (UTC tz-aware)
+                    "datetime": pd.Timestamp(open_time_ms, unit="ms", tz="UTC"),
+                    "instrument": symbol,  # 统一字段名为 instrument
                     "open": float(row[1]),
                     "high": float(row[2]),
                     "low": float(row[3]),
@@ -463,14 +467,15 @@ class BinancePerpetualCollector:
                     "volume": float(row[5]),
                     "amount": float(row[7]),
                 })
+                symbol_count += 1
 
-            logger.info(f"Fetched {len(all_data)} rows for {symbol}")
+            logger.info(f"Fetched {symbol_count} rows for {symbol}")
 
         df = pd.DataFrame(all_data)
 
-        # 去重 (按 symbol + date)，保留最新
-        df = df.drop_duplicates(subset=["symbol", "date"], keep="last")
-        df = df.sort_values(["symbol", "date"]).reset_index(drop=True)
+        # 去重 (按 instrument + open_time_ms)，保留最新
+        df = df.drop_duplicates(subset=["instrument", "open_time_ms"], keep="last")
+        df = df.sort_values(["instrument", "open_time_ms"]).reset_index(drop=True)
 
         # 保存为 Parquet (不是 Qlib 格式!)
         output_file = self.output_dir / f"crypto_{interval}_{start_date}_{end_date}.parquet"
@@ -535,10 +540,17 @@ class BinancePerpetualCollector:
 """
 数据格式转换 - 调用 Qlib 官方 dump_bin.py
 
-重要: 不自造二进制格式，完全依赖官方脚本
+重要:
+1. 不自造二进制格式，完全依赖官方脚本
+2. dump_bin.py 默认读取 CSV，需先将 Parquet 转为 CSV
+3. 字段名必须与 Collector 输出一致: datetime, instrument
 """
 import subprocess
 from pathlib import Path
+import pandas as pd
+import logging
+
+logger = logging.getLogger(__name__)
 
 
 class QlibDataConverter:
@@ -549,31 +561,60 @@ class QlibDataConverter:
         if not self.dump_bin_script.exists():
             raise FileNotFoundError(f"dump_bin.py not found: {self.dump_bin_script}")
 
+    def _parquet_to_csv(self, parquet_dir: Path, csv_dir: Path) -> None:
+        """
+        将 Parquet 文件转换为 CSV (dump_bin.py 所需格式)
+
+        dump_bin.py 期望每个 instrument 一个 CSV 文件，文件名为 {instrument}.csv
+        """
+        csv_dir.mkdir(parents=True, exist_ok=True)
+
+        for parquet_file in parquet_dir.glob("*.parquet"):
+            df = pd.read_parquet(parquet_file)
+
+            # 按 instrument 分组，每个 instrument 单独一个 CSV
+            for instrument, group_df in df.groupby("instrument"):
+                # 选择 dump_bin.py 需要的字段
+                output_df = group_df[["datetime", "open", "high", "low", "close", "volume", "amount"]].copy()
+                output_df = output_df.sort_values("datetime").reset_index(drop=True)
+
+                csv_file = csv_dir / f"{instrument}.csv"
+                output_df.to_csv(csv_file, index=False)
+                logger.info(f"Converted {instrument}: {len(output_df)} rows -> {csv_file}")
+
     def convert(
         self,
         source_dir: str,
         target_dir: str,
         freq: str = "1h",
-        date_field: str = "date",
-        symbol_field: str = "symbol",
+        date_field: str = "datetime",      # 与 Collector 输出一致
+        symbol_field: str = "instrument",  # 与 Collector 输出一致
     ) -> bool:
         """
         调用官方 dump_bin.py 转换数据
 
         Args:
-            source_dir: 原始数据目录 (CSV/Parquet)
+            source_dir: 原始数据目录 (Parquet)
             target_dir: Qlib 数据输出目录
             freq: 数据频率
-            date_field: 日期字段名
-            symbol_field: 品种字段名
+            date_field: 日期字段名 (默认 datetime)
+            symbol_field: 品种字段名 (默认 instrument)
 
         Returns:
             bool: 转换是否成功
         """
+        source_path = Path(source_dir)
+
+        # Step 1: 将 Parquet 转换为 CSV (dump_bin.py 所需格式)
+        csv_temp_dir = source_path.parent / "csv_temp"
+        logger.info(f"Converting Parquet to CSV: {source_path} -> {csv_temp_dir}")
+        self._parquet_to_csv(source_path, csv_temp_dir)
+
+        # Step 2: 调用 dump_bin.py
         cmd = [
             "python", str(self.dump_bin_script),
             "dump_all",
-            f"--csv_path={source_dir}",
+            f"--csv_path={csv_temp_dir}",
             f"--qlib_dir={target_dir}",
             f"--freq={freq}",
             f"--date_field_name={date_field}",
@@ -581,13 +622,14 @@ class QlibDataConverter:
             "--include_fields=open,high,low,close,volume,amount",
         ]
 
+        logger.info(f"Running: {' '.join(cmd)}")
         result = subprocess.run(cmd, capture_output=True, text=True)
 
         if result.returncode != 0:
-            print(f"转换失败: {result.stderr}")
+            logger.error(f"转换失败: {result.stderr}")
             return False
 
-        print(f"转换成功: {target_dir}")
+        logger.info(f"转换成功: {target_dir}")
         return True
 ```
 
@@ -621,7 +663,11 @@ class CryptoCalendarProvider(CalendarProvider):
         freq: str = "1h",
         future: bool = False,
     ) -> List[pd.Timestamp]:
-        """生成连续时间戳 (无休市)"""
+        """
+        生成连续时间戳 (无休市)
+
+        区间语义: [start_time, end_time) 左闭右开
+        """
         if freq not in self.FREQ_MAP:
             raise ValueError(f"Unsupported freq: {freq}")
 
@@ -629,7 +675,14 @@ class CryptoCalendarProvider(CalendarProvider):
         start = pd.Timestamp(start_time, tz="UTC")
         end = pd.Timestamp(end_time, tz="UTC")
 
-        timestamps = pd.date_range(start=start, end=end, freq=self.FREQ_MAP[freq])
+        # 使用 inclusive="left" 实现左闭右开区间 [start, end)
+        # 注意: pandas >= 1.4.0 支持 inclusive 参数
+        timestamps = pd.date_range(
+            start=start,
+            end=end,
+            freq=self.FREQ_MAP[freq],
+            inclusive="left"  # [start, end) 左闭右开
+        )
 
         if not future:
             now = pd.Timestamp.now(tz="UTC")
@@ -841,15 +894,17 @@ class SignalConsumer:
         # 1. 等待 Connector 就绪
         self._wait_for_connector_ready()
 
-        # 2. 启动 asyncio 工作线程
+        # 2. 设置运行标志 (必须在启动 worker 之前!)
+        self._running = True
+
+        # 3. 启动 asyncio 工作线程
         self._start_async_worker()
 
-        # 3. 连接 MQTT
+        # 4. 连接 MQTT
         self.client.connect(self.broker_host, self.broker_port, keepalive=60)
         logger.info("SignalConsumer started")
 
-        # 4. 阻塞运行 MQTT 循环
-        self._running = True
+        # 5. 阻塞运行 MQTT 循环
         self.client.loop_forever()
 
     def stop(self):
@@ -1097,8 +1152,8 @@ exec "$@"
 # research/requirements.txt
 # Qlib 核心依赖会通过 pip install -e 自动安装
 
-# MQTT 通信
-paho-mqtt>=1.6.1
+# MQTT 通信 (锁定 1.x 版本，2.x 有 API 破坏性变更)
+paho-mqtt>=1.6.1,<2.0
 
 # 数据处理
 pyarrow>=14.0.0
@@ -1165,8 +1220,8 @@ exec "$@"
 # execution/requirements.txt
 # Hummingbot 核心依赖会通过 pip install -e 自动安装
 
-# MQTT 通信
-paho-mqtt>=1.6.1
+# MQTT 通信 (锁定 1.x 版本，2.x 有 API 破坏性变更)
+paho-mqtt>=1.6.1,<2.0
 
 # 配置
 pyyaml>=6.0
